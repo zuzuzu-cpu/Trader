@@ -35,16 +35,21 @@ from agents.skeptic import Skeptic
 from agents.portfolio_mgr import PortfolioManager
 from execution.alpaca_broker import AlpacaBroker
 from utils.logger import get_logger, TradeJournal
+from utils.async_executor import AsyncExecutor
+from utils.telegram import TelegramAlert
 
 log = get_logger("sentinel")
+telegram = TelegramAlert()
 
 # ─── Graceful Shutdown ───────────────────────────────────────────────────────
 _shutdown = False
 
 def _signal_handler(signum, frame):
     global _shutdown
-    log.warning(f"Shutdown signal received ({signum}). Finishing current cycle...")
-    _shutdown = True
+    if not _shutdown:
+        log.warning(f"Shutdown signal received ({signum}). Finishing current cycle...")
+        telegram.shutdown()
+        _shutdown = True
 
 signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
@@ -72,6 +77,7 @@ def run_cycle():
     skeptic = Skeptic(fetcher=fetcher, broker=broker)
     portfolio_mgr = PortfolioManager()
     journal = TradeJournal()
+    async_exec = AsyncExecutor()
 
     journal.start_cycle(cycle_id)
     stats = {"universe": 0, "candidates": 0, "trades": 0, "skipped": 0, "errors": 0}
@@ -96,6 +102,7 @@ def run_cycle():
                     f"CIRCUIT BREAKER: Drawdown {drawdown:.1%} exceeds "
                     f"{config.MAX_DRAWDOWN_PCT:.0%} limit. Skipping cycle."
                 )
+                telegram.circuit_breaker(drawdown, equity)
                 journal.end_cycle(cycle_id, 0, 0, 0, 0, 0)
                 return
 
@@ -104,8 +111,8 @@ def run_cycle():
         universe = scanner.get_full_universe(max_stocks=200)
         stats["universe"] = sum(len(v) for v in universe.values())
 
-        # ─── Step 2: Quantitative Filtering ──────────────────────────
-        log.info("Step 2: Running quantitative screening...")
+        # ─── Step 2: Quantitative Filtering (ASYNC) ──────────────────
+        log.info(f"Step 2: Running parallel quantitative screening ({config.MAX_WORKERS} workers)...")
         end_date = datetime.now()
         start_date = end_date - timedelta(days=config.LOOKBACK_DAYS)
         start_str = start_date.strftime('%Y-%m-%d')
@@ -113,49 +120,35 @@ def run_cycle():
 
         candidates = []
 
-        # Screen stocks
-        for i, symbol in enumerate(universe["stocks"]):
-            if _shutdown:
-                break
-            try:
-                result = quant.evaluate_stock(symbol, start_str, end_str)
-                if result["score"] >= config.QUANT_PASS_SCORE:
-                    candidates.append(result)
-                    log.debug(f"  PASS: {symbol} score={result['score']:.0f} ({result['reason']})")
-            except Exception as e:
-                log.debug(f"  Error screening {symbol}: {e}")
-                stats["errors"] += 1
+        # Screen stocks in parallel
+        if universe["stocks"] and not _shutdown:
+            stock_results = async_exec.map_batched(
+                quant.evaluate_stock, universe["stocks"],
+                config.BATCH_SIZE, start_str, end_str
+            )
+            candidates.extend([r for r in stock_results if r.get("score", 0) >= config.QUANT_PASS_SCORE or (r.get("direction") == "short" and r.get("score", 0) >= config.QUANT_PASS_SCORE)])
+            stats["errors"] += len(universe["stocks"]) - len(stock_results)
 
-            # Progress log every 50 stocks
-            if (i + 1) % 50 == 0:
-                log.info(f"  Screened {i+1}/{len(universe['stocks'])} stocks, {len(candidates)} candidates so far")
+        # Screen ETFs in parallel
+        if universe["etfs"] and not _shutdown:
+            etf_results = async_exec.map_batched(
+                quant.evaluate_etf, universe["etfs"],
+                config.BATCH_SIZE, start_str, end_str
+            )
+            candidates.extend([r for r in etf_results if r.get("score", 0) >= config.QUANT_PASS_SCORE or (r.get("direction") == "short" and r.get("score", 0) >= config.QUANT_PASS_SCORE)])
+            stats["errors"] += len(universe["etfs"]) - len(etf_results)
 
-        # Screen ETFs
-        for symbol in universe["etfs"]:
-            if _shutdown:
-                break
-            try:
-                result = quant.evaluate_etf(symbol, start_str, end_str)
-                if result["score"] >= config.QUANT_PASS_SCORE:
-                    candidates.append(result)
-                    log.debug(f"  PASS: {symbol} score={result['score']:.0f}")
-            except Exception as e:
-                stats["errors"] += 1
-
-        # Screen crypto
-        for symbol in universe["crypto"]:
-            if _shutdown:
-                break
-            try:
-                result = quant.evaluate_crypto(symbol, start_str, end_str)
-                if result["score"] >= config.QUANT_PASS_SCORE:
-                    candidates.append(result)
-                    log.debug(f"  PASS: {symbol} score={result['score']:.0f}")
-            except Exception as e:
-                stats["errors"] += 1
+        # Screen crypto in parallel
+        if universe["crypto"] and not _shutdown:
+            crypto_results = async_exec.map_batched(
+                quant.evaluate_crypto, universe["crypto"],
+                config.BATCH_SIZE, start_str, end_str
+            )
+            candidates.extend([r for r in crypto_results if r.get("score", 0) >= config.QUANT_PASS_SCORE or (r.get("direction") == "short" and r.get("score", 0) >= config.QUANT_PASS_SCORE)])
+            stats["errors"] += len(universe["crypto"]) - len(crypto_results)
 
         # Sort by score (best first)
-        candidates.sort(key=lambda x: x["score"], reverse=True)
+        candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
         stats["candidates"] = len(candidates)
 
         log.info(
@@ -230,8 +223,11 @@ def run_cycle():
 
                 # ─── Step 5: Execute ─────────────────────────────────
                 if verdict["should_trade"]:
+                    direction = verdict.get("direction", "long")
+                    side_label = "BUY" if direction == "long" else "SHORT"
+
                     log.info(
-                        f"  ★ EXECUTING: {symbol} | "
+                        f"  ★ EXECUTING {side_label}: {symbol} | "
                         f"Confidence: {verdict['confidence']:.1f}% | "
                         f"Notional: ${verdict['notional']:.2f} | "
                         f"Stop: {verdict['trailing_stop_pct']:.1f}%"
@@ -240,22 +236,29 @@ def run_cycle():
                     exec_result = broker.execute_trade(
                         symbol,
                         verdict["notional"],
-                        verdict["trailing_stop_pct"]
+                        verdict["trailing_stop_pct"],
+                        direction=direction
                     )
 
                     if exec_result["status"] == "complete":
                         stats["trades"] += 1
                         journal.log_trade(
-                            cycle_id, symbol, asset_type, "BUY",
-                            verdict["notional"], exec_result["buy_order_id"],
+                            cycle_id, symbol, asset_type, side_label,
+                            verdict["notional"], exec_result.get("order_id", ""),
                             q_result["score"], sentiment["score"],
                             risk["grade"], verdict["confidence"],
                             verdict["reasoning"]
+                        )
+                        telegram.trade_executed(
+                            symbol, side_label, verdict["notional"],
+                            verdict["confidence"], exec_result.get("fill_price", 0),
+                            verdict["trailing_stop_pct"]
                         )
                         log.info(f"  ✓ Trade complete: {symbol} filled @ ${exec_result['fill_price']:.2f}")
                     else:
                         stats["errors"] += 1
                         log.warning(f"  ✗ Trade failed: {symbol} → {exec_result['status']}")
+                        telegram.error(f"Trade failed for {symbol}: {exec_result['status']}")
                 else:
                     stats["skipped"] += 1
                     log.info(f"  ○ Skipped: {verdict['reasoning'][:100]}")
@@ -280,6 +283,12 @@ def run_cycle():
         journal.end_cycle(
             cycle_id, stats["universe"], stats["candidates"],
             stats["trades"], stats["skipped"], stats["errors"]
+        )
+
+        telegram.cycle_summary(
+            cycle_id, stats["universe"], stats["candidates"],
+            stats["trades"], stats["skipped"], stats["errors"],
+            account["equity"]
         )
 
     except Exception as e:
@@ -334,6 +343,8 @@ def main():
     # Schedule recurring cycles
     schedule.every(config.SCAN_INTERVAL_MINUTES).minutes.do(run_cycle)
     log.info(f"Scheduled: every {config.SCAN_INTERVAL_MINUTES} minutes")
+
+    telegram.startup()
 
     # Main loop
     while not _shutdown:

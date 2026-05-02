@@ -12,6 +12,11 @@ VOLUME:             OBV, VWAP deviation, Volume SMA ratio
 VOLATILITY:         ATR, Historical volatility (σ)
 RISK:               Sharpe Ratio, Sortino Ratio, Max Drawdown
 FUNDAMENTAL:        Piotroski F-Score, Magic Formula, P/E, P/B
+NEW IN V3.5:
+  RELATIVE STRENGTH:  RS Rating vs SPY benchmark
+  MULTI-TIMEFRAME:    1H + 1D + 1W signal confirmation
+  EARNINGS AWARENESS: Blackout period before earnings dates
+  SHORT SIGNALS:      Identifies bearish candidates for shorting
 """
 import numpy as np
 import pandas as pd
@@ -20,6 +25,7 @@ from typing import Optional
 
 import config
 from core.data_fetcher import DataFetcher
+from core.market_regime import MarketRegime
 from utils.logger import get_logger
 
 log = get_logger("sentinel.quant_engine")
@@ -33,15 +39,20 @@ class QuantEngine:
         "symbol": str,
         "asset_type": str,
         "score": float (0-100),
+        "direction": str ("long" or "short"),
         "signals": dict,       # Raw indicator values
         "reason": str,         # Human-readable summary
         "sector": str,
         "atr": float,          # For position sizing downstream
+        "rs_rating": float,    # Relative strength vs benchmark
+        "earnings_risk": bool, # True if within earnings blackout
+        "mtf_confirmed": bool, # Multi-timeframe agreement
     }
     """
 
     def __init__(self, fetcher: DataFetcher = None):
         self.fetcher = fetcher or DataFetcher()
+        self.regime = MarketRegime(fetcher=self.fetcher)
 
     # ─── Stock Evaluation ────────────────────────────────────────────────
 
@@ -49,6 +60,7 @@ class QuantEngine:
         """
         Full multi-factor evaluation for equities.
         Combines technical indicators (60%) + fundamental analysis (40%).
+        Enhanced with RS rating, MTF confirmation, earnings awareness, and short detection.
         """
         result = self._base_result(symbol, "stock")
 
@@ -71,9 +83,45 @@ class QuantEngine:
         fundamentals = self.fetcher.get_fundamentals(symbol)
         fund_score, fund_reasons = self._score_fundamentals(fundamentals)
 
-        # 5. Combine
+        # 5. Combine base score
         total_score = tech_score + fund_score
-        result["score"] = min(total_score, 100)
+
+        # 6. Relative Strength vs Benchmark
+        rs = self.regime.calculate_relative_strength(symbol, start_date, end_date)
+        result["rs_rating"] = rs["rs_rating"]
+        if rs["rs_rank"] == "LEADER":
+            total_score += 8
+            tech_reasons.append(f"RS_LEADER({rs['rs_rating']:.2f})")
+        elif rs["rs_rank"] == "STRONG":
+            total_score += 4
+            tech_reasons.append(f"RS_STRONG({rs['rs_rating']:.2f})")
+        elif rs["rs_rank"] == "LAGGARD":
+            total_score -= 8
+            tech_reasons.append(f"RS_LAGGARD({rs['rs_rating']:.2f})")
+
+        # 7. Earnings Calendar Check
+        earnings = self.fetcher.get_earnings_date(symbol)
+        result["earnings_risk"] = earnings["has_upcoming_earnings"]
+        if earnings["has_upcoming_earnings"]:
+            tech_reasons.append(f"EARNINGS_IN_{earnings['days_until']}D")
+            total_score -= 5  # Penalty for earnings uncertainty
+
+        # 8. Multi-Timeframe Confirmation
+        direction = "long" if total_score >= 50 else "short"
+        mtf = self.regime.confirm_multi_timeframe(symbol, start_date, end_date, direction)
+        result["mtf_confirmed"] = mtf["confirmed"]
+        total_score += mtf["mtf_score_bonus"]
+        if mtf["agreeing_timeframes"] > 0:
+            tech_reasons.append(f"MTF_{mtf['agreeing_timeframes']}/3")
+
+        # 9. Determine direction (long vs short)
+        result["score"] = max(0, min(100, total_score))
+        if result["score"] <= config.QUANT_SHORT_SCORE and config.ENABLE_SHORT_SELLING:
+            result["direction"] = "short"
+            # For shorts, invert the score: lower quant = stronger short signal
+            result["score"] = 100 - result["score"]
+            tech_reasons.append("SHORT_SIGNAL")
+
         result["signals"] = signals
         result["atr"] = signals.get("atr", 0)
         result["sector"] = fundamentals.get("sector", "Unknown") if fundamentals else "Unknown"
@@ -511,8 +559,12 @@ class QuantEngine:
             "symbol": symbol,
             "asset_type": asset_type,
             "score": 0,
+            "direction": "long",
             "signals": {},
             "reason": "",
             "sector": "Unknown",
             "atr": 0,
+            "rs_rating": 1.0,
+            "earnings_risk": False,
+            "mtf_confirmed": False,
         }

@@ -3,7 +3,10 @@ Data Fetcher - The data backbone of Sentinel Autotrader.
 
 Handles all external data ingestion with:
 - Rate-limited Alpaca Data V2 calls (bars, quotes, snapshots)
+- Multi-timeframe bars (1H, 1D, 1W) for signal confirmation
 - Yahoo Finance fundamentals with caching
+- Earnings calendar awareness (avoid pre-earnings trades)
+- Benchmark data for relative strength calculation
 - NewsAPI headline fetching
 - Batch request support for efficiency
 - Automatic retry on transient failures
@@ -290,6 +293,90 @@ class DataFetcher:
                 log.debug(f"NewsAPI fetch failed for {query}: {e}")
 
         return headlines[:max_results]
+
+    # ─── Multi-Timeframe Bars ────────────────────────────────────────────
+
+    def get_multi_timeframe_bars(self, symbol: str, start_date: str,
+                                  end_date: str, is_crypto: bool = False) -> dict:
+        """
+        Fetches bars at 3 timeframes: 1H, 1D, 1W.
+        Returns {"1h": df, "1d": df, "1w": df} (any may be None).
+        """
+        fetch_fn = self.get_crypto_bars if is_crypto else self.get_stock_bars
+
+        result = {}
+        # Daily (already the default)
+        result["1d"] = fetch_fn(symbol, start_date, end_date, TimeFrame.Day)
+
+        # Hourly (last 5 days only to keep data manageable)
+        from datetime import datetime, timedelta
+        hourly_start = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
+        result["1h"] = fetch_fn(symbol, hourly_start, end_date, TimeFrame.Hour)
+
+        # Weekly
+        result["1w"] = fetch_fn(symbol, start_date, end_date, TimeFrame.Week)
+
+        return result
+
+    # ─── Earnings Calendar ───────────────────────────────────────────────
+
+    def get_earnings_date(self, symbol: str) -> dict:
+        """
+        Checks if a stock has upcoming earnings within the blackout window.
+        Returns {"has_upcoming_earnings": bool, "days_until": int, "date": str}
+        """
+        try:
+            ticker = yf.Ticker(symbol)
+            cal = ticker.calendar
+            if cal is None or cal.empty:
+                return {"has_upcoming_earnings": False, "days_until": 999, "date": ""}
+
+            # calendar can be a DataFrame with 'Earnings Date' row or columns
+            from datetime import datetime
+            today = datetime.now().date()
+
+            # Try to extract earnings date
+            earnings_date = None
+            if isinstance(cal, pd.DataFrame):
+                # Some versions return a DataFrame with dates as columns
+                for col in cal.columns:
+                    try:
+                        d = pd.to_datetime(col).date()
+                        if d >= today:
+                            earnings_date = d
+                            break
+                    except Exception:
+                        pass
+                # Or it might have 'Earnings Date' as a row
+                if earnings_date is None and 'Earnings Date' in cal.index:
+                    val = cal.loc['Earnings Date'].iloc[0]
+                    try:
+                        earnings_date = pd.to_datetime(val).date()
+                    except Exception:
+                        pass
+
+            if earnings_date and earnings_date >= today:
+                days_until = (earnings_date - today).days
+                return {
+                    "has_upcoming_earnings": days_until <= config.EARNINGS_BLACKOUT_DAYS,
+                    "days_until": days_until,
+                    "date": str(earnings_date),
+                }
+
+            return {"has_upcoming_earnings": False, "days_until": 999, "date": ""}
+
+        except Exception as e:
+            log.debug(f"Earnings calendar fetch failed for {symbol}: {e}")
+            return {"has_upcoming_earnings": False, "days_until": 999, "date": ""}
+
+    # ─── Benchmark Data (for Relative Strength) ─────────────────────────
+
+    def get_benchmark_bars(self, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+        """
+        Fetches daily bars for the benchmark (SPY by default).
+        Used to calculate relative strength ratings.
+        """
+        return self.get_stock_bars(config.BENCHMARK_SYMBOL, start_date, end_date)
 
     # ─── Cache Helpers ───────────────────────────────────────────────────
 

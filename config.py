@@ -1,5 +1,5 @@
 """
-Sentinel Autotrader V3.0 - Centralized Configuration
+Sentinel Autotrader V3.5 - Centralized Configuration
 All tunable parameters in one place. Override via .env file.
 """
 import os
@@ -16,15 +16,24 @@ ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_REASONER_MODEL = os.getenv("DEEPSEEK_REASONER_MODEL", "deepseek-reasoner")
 
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 COINMARKETCAP_API_KEY = os.getenv("COINMARKETCAP_API_KEY", "")
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 # ─── Rate Limiting ──────────────────────────────────────────────────────────
 ALPACA_RATE_LIMIT = int(os.getenv("ALPACA_RATE_LIMIT", 180))        # requests per minute (200 max, keep buffer)
 DEEPSEEK_RATE_LIMIT = int(os.getenv("DEEPSEEK_RATE_LIMIT", 30))     # conservative concurrent limit
 NEWSAPI_RATE_LIMIT = int(os.getenv("NEWSAPI_RATE_LIMIT", 90))       # 100/day free tier, keep buffer
+
+
+# ─── Async Processing ──────────────────────────────────────────────────────
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", 10))                      # ThreadPoolExecutor workers
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", 20))                        # Symbols per batch
 
 
 # ─── Universe Scanning ──────────────────────────────────────────────────────
@@ -45,10 +54,14 @@ ETF_SYMBOLS = [
     "SOXX", "SMH", "IBB", "XBI", "KWEB", "FXI",
 ]
 
+# Benchmark for relative strength
+BENCHMARK_SYMBOL = os.getenv("BENCHMARK_SYMBOL", "SPY")
+
 
 # ─── Quant Engine Thresholds ────────────────────────────────────────────────
 LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", 120))                 # Days of historical data
-QUANT_PASS_SCORE = float(os.getenv("QUANT_PASS_SCORE", 55))         # Minimum score to pass quant filter
+QUANT_PASS_SCORE = float(os.getenv("QUANT_PASS_SCORE", 55))         # Minimum score to pass quant filter (long)
+QUANT_SHORT_SCORE = float(os.getenv("QUANT_SHORT_SCORE", 25))       # Below this = short candidate
 
 # RSI
 RSI_PERIOD = 14
@@ -76,10 +89,26 @@ ATR_PERIOD = 14
 SHARPE_WINDOW = 60               # Days for rolling Sharpe
 RISK_FREE_RATE = 0.05            # Annual risk-free rate for Sharpe/Sortino
 
+# Multi-Timeframe
+ENABLE_MULTI_TIMEFRAME = os.getenv("ENABLE_MULTI_TIMEFRAME", "true").lower() == "true"
+MTF_CONFIRMATION_REQUIRED = int(os.getenv("MTF_CONFIRMATION_REQUIRED", 2))  # out of 3 timeframes must agree
+
+# Relative Strength
+RS_LOOKBACK_DAYS = int(os.getenv("RS_LOOKBACK_DAYS", 63))           # ~3 months for RS calculation
+
+# Earnings Calendar
+EARNINGS_BLACKOUT_DAYS = int(os.getenv("EARNINGS_BLACKOUT_DAYS", 3)) # Days before earnings to avoid
+
 
 # ─── AI Agent Configuration ─────────────────────────────────────────────────
 SENTIMENT_RANGE = (-10, 10)
 NEWS_HEADLINE_COUNT = 10          # Headlines to send to DeepSeek
+
+
+# ─── Short Selling ──────────────────────────────────────────────────────────
+ENABLE_SHORT_SELLING = os.getenv("ENABLE_SHORT_SELLING", "true").lower() == "true"
+SHORT_CONFIDENCE_THRESHOLD = float(os.getenv("SHORT_CONFIDENCE_THRESHOLD", 82))
+MAX_SHORT_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", 10))
 
 
 # ─── Portfolio & Risk Management ─────────────────────────────────────────────
@@ -106,6 +135,12 @@ MARKET_OPEN_MINUTE = 30
 MARKET_CLOSE_HOUR = 16
 MARKET_CLOSE_MINUTE = 0
 TRADE_EXTENDED_HOURS = os.getenv("TRADE_EXTENDED_HOURS", "true").lower() == "true"
+
+
+# ─── Dashboard ──────────────────────────────────────────────────────────────
+DASHBOARD_ENABLED = os.getenv("DASHBOARD_ENABLED", "true").lower() == "true"
+DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", 8080))
 
 
 # ─── Paths ──────────────────────────────────────────────────────────────────

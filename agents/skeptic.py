@@ -7,7 +7,8 @@ trade proposal with hard data on spreads, correlations, and portfolio risk.
 Features:
 - Bid/ask spread analysis via Alpaca quotes
 - Sector concentration checking against current portfolio
-- Pump-and-dump pattern detection for crypto
+- Earnings blackout enforcement
+- Short position risk assessment (borrow cost, squeeze risk)
 - Portfolio correlation analysis
 - Structured DeepSeek risk assessment
 """
@@ -109,15 +110,53 @@ class Skeptic:
             flags.append(f"SEVERE_DRAWDOWN({max_dd:.0%})")
             risk_score -= 15
 
-        # ─── 5. Sentiment Contradictions ─────────────────────────────
+        # ─── 5. Earnings Risk ────────────────────────────────────────
+        direction = quant_result.get("direction", "long")
+        earnings_risk = quant_result.get("earnings_risk", False)
+        if earnings_risk and direction == "long":
+            flags.append("EARNINGS_BLACKOUT")
+            risk_score -= 15
+
+        # ─── 6. Short-Specific Risk Checks ──────────────────────────
+        if direction == "short":
+            # Shorts in uptrending stocks are dangerous
+            if signals.get("above_sma_long", False):
+                flags.append("SHORT_AGAINST_UPTREND")
+                risk_score -= 12
+            # Check for short squeeze potential (high short interest proxy: low float + vol spike)
+            if signals.get("volume_spike", False):
+                flags.append("SHORT_SQUEEZE_RISK")
+                risk_score -= 10
+            # RS leaders are bad short candidates
+            rs = quant_result.get("rs_rating", 1.0)
+            if rs > 1.2:
+                flags.append(f"SHORT_RS_LEADER({rs:.2f})")
+                risk_score -= 10
+            # Max short positions check
+            if self.broker:
+                try:
+                    positions = self.broker.get_positions()
+                    short_count = sum(1 for p in positions if float(p.qty) < 0)
+                    if short_count >= config.MAX_SHORT_POSITIONS:
+                        flags.append(f"MAX_SHORTS({short_count})")
+                        risk_score -= 20
+                except Exception:
+                    pass
+
+        # ─── 7. Sentiment Contradictions ─────────────────────────────
         quant_score = quant_result.get("score", 0)
         sentiment_score = sentiment_result.get("score", 0)
-        if quant_score > 70 and sentiment_score < -3:
-            flags.append("QUANT_SENTIMENT_DIVERGENCE")
-            risk_score -= 10
-        if sentiment_score < -5:
-            flags.append(f"VERY_NEGATIVE_SENTIMENT({sentiment_score})")
-            risk_score -= 10
+        if direction == "long":
+            if quant_score > 70 and sentiment_score < -3:
+                flags.append("QUANT_SENTIMENT_DIVERGENCE")
+                risk_score -= 10
+            if sentiment_score < -5:
+                flags.append(f"VERY_NEGATIVE_SENTIMENT({sentiment_score})")
+                risk_score -= 10
+        else:  # short
+            if quant_score > 70 and sentiment_score > 3:
+                flags.append("SHORT_POSITIVE_SENTIMENT")
+                risk_score -= 10
 
         # ─── 6. DeepSeek AI Risk Assessment ──────────────────────────
         ai_assessment = self._ai_risk_assessment(

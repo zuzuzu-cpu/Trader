@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentinel Autotrader V3.5</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; }
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 1rem; }
+        .text-neon-green { color: #4ade80; }
+        .text-neon-red { color: #f87171; }
+        .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+        .status-running { background-color: #4ade80; box-shadow: 0 0 10px #4ade80; }
+        .status-offline { background-color: #94a3b8; }
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+</head>
+<body class="p-4 md:p-8 min-h-screen">
+
+    <div class="max-w-7xl mx-auto">
+        <!-- Header -->
+        <header class="flex flex-col md:flex-row justify-between items-center mb-8">
+            <div>
+                <h1 class="text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
+                    Sentinel Autotrader
+                </h1>
+                <p class="text-slate-400 text-sm mt-1">V3.5 Autonomous Swarm</p>
+            </div>
+            <div class="mt-4 md:mt-0 flex items-center space-x-4 glass-panel px-4 py-2">
+                <div class="flex items-center">
+                    <span id="bot-status-dot" class="status-dot status-offline"></span>
+                    <span id="bot-status-text" class="text-sm font-medium">Connecting...</span>
+                </div>
+                <div class="h-4 w-px bg-slate-600"></div>
+                <div class="text-xs text-slate-400" id="last-update">Last update: --</div>
+            </div>
+        </header>
+
+        <!-- KPI Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <div class="glass-panel p-5">
+                <h3 class="text-slate-400 text-sm font-medium mb-1">Total Equity</h3>
+                <div class="text-3xl font-bold font-mono" id="val-equity">$--</div>
+                <div class="mt-2 text-sm font-medium" id="val-pl">--</div>
+            </div>
+            <div class="glass-panel p-5">
+                <h3 class="text-slate-400 text-sm font-medium mb-1">Buying Power / Cash</h3>
+                <div class="text-xl font-semibold font-mono" id="val-bp">$--</div>
+                <div class="text-sm font-mono text-slate-400 mt-1" id="val-cash">$--</div>
+            </div>
+            <div class="glass-panel p-5">
+                <h3 class="text-slate-400 text-sm font-medium mb-1">Open Positions</h3>
+                <div class="text-3xl font-bold font-mono" id="val-positions">--</div>
+                <div class="mt-2 text-sm text-slate-400">Active portfolio</div>
+            </div>
+            <div class="glass-panel p-5">
+                <h3 class="text-slate-400 text-sm font-medium mb-1">Max Drawdown</h3>
+                <div class="text-2xl font-bold font-mono" id="val-drawdown">--%</div>
+                <div class="mt-2 text-sm font-medium">Trades Today: <span id="val-trades-today" class="text-white">--</span></div>
+            </div>
+        </div>
+
+        <!-- Main Content Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- Left Column: Chart & Recent Trades -->
+            <div class="lg:col-span-2 space-y-6">
+                <!-- Equity Chart -->
+                <div class="glass-panel p-5">
+                    <h2 class="text-lg font-semibold mb-4 flex items-center">
+                        <svg class="w-5 h-5 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path></svg>
+                        Equity Curve (7D)
+                    </h2>
+                    <div class="h-64 relative">
+                        <canvas id="equityChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Recent Executions -->
+                <div class="glass-panel p-5">
+                    <h2 class="text-lg font-semibold mb-4 flex items-center">
+                        <svg class="w-5 h-5 mr-2 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                        Recent Executions
+                    </h2>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm text-left">
+                            <thead class="text-xs text-slate-400 uppercase bg-slate-800/50">
+                                <tr>
+                                    <th class="px-4 py-3 rounded-tl-lg">Time</th>
+                                    <th class="px-4 py-3">Symbol</th>
+                                    <th class="px-4 py-3">Side</th>
+                                    <th class="px-4 py-3">Notional</th>
+                                    <th class="px-4 py-3">Confidence</th>
+                                    <th class="px-4 py-3 rounded-tr-lg">Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trades-table" class="divide-y divide-slate-700/50">
+                                <tr><td colspan="6" class="px-4 py-4 text-center text-slate-500">Loading trades...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: AI Reasoning Feed -->
+            <div class="glass-panel p-5 flex flex-col h-[800px]">
+                <h2 class="text-lg font-semibold mb-4 flex items-center">
+                    <svg class="w-5 h-5 mr-2 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path></svg>
+                    AI Decision Stream
+                </h2>
+                <div class="flex-1 overflow-y-auto pr-2 space-y-4" id="decisions-feed">
+                    <div class="text-center text-slate-500 py-10">Loading AI decisions...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Chart.js Configuration
+        Chart.defaults.color = '#94a3b8';
+        Chart.defaults.font.family = 'ui-mono, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+        let equityChart = null;
+
+        function initChart() {
+            const ctx = document.getElementById('equityChart').getContext('2d');
+            equityChart = new Chart(ctx, {
+                type: 'line',
+                data: { datasets: [{
+                    label: 'Equity',
+                    data: [],
+                    borderColor: '#38bdf8',
+                    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHitRadius: 10,
+                    fill: true,
+                    tension: 0.4
+                }]},
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, tooltip: {
+                        callbacks: { label: function(context) {
+                            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(context.parsed.y);
+                        }}
+                    }},
+                    scales: {
+                        x: { type: 'linear', display: false }, // Using timestamp for X, hidden to save space
+                        y: {
+                            ticks: {
+                                callback: function(value) { return '$' + (value / 1000).toFixed(1) + 'k'; }
+                            },
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' }
+                        }
+                    },
+                    interaction: { mode: 'index', intersect: false }
+                }
+            });
+        }
+
+        // Data Fetching
+        async function fetchDashboardData() {
+            try {
+                // Fetch Summary
+                const sumRes = await fetch('/api/summary');
+                const summary = await sumRes.json();
+                
+                if (summary.status === 'ok') {
+                    // Update Status
+                    document.getElementById('bot-status-dot').className = 'status-dot status-running';
+                    document.getElementById('bot-status-text').textContent = summary.status_text.toUpperCase();
+                    document.getElementById('last-update').textContent = `Update: ${new Date().toLocaleTimeString()}`;
+                    
+                    // Update KPIs
+                    const fmtUSD = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+                    document.getElementById('val-equity').textContent = fmtUSD.format(summary.equity);
+                    document.getElementById('val-bp').textContent = fmtUSD.format(summary.buying_power);
+                    document.getElementById('val-cash').textContent = fmtUSD.format(summary.cash);
+                    document.getElementById('val-positions').textContent = summary.positions_count;
+                    document.getElementById('val-drawdown').textContent = summary.max_drawdown_pct.toFixed(2) + '%';
+                    document.getElementById('val-trades-today').textContent = summary.trades_today;
+
+                    const plEl = document.getElementById('val-pl');
+                    if (summary.total_pl >= 0) {
+                        plEl.textContent = `▲ +${fmtUSD.format(summary.total_pl)} (+${summary.total_pl_pct.toFixed(2)}%)`;
+                        plEl.className = 'mt-2 text-sm font-medium text-neon-green';
+                    } else {
+                        plEl.textContent = `▼ ${fmtUSD.format(summary.total_pl)} (${summary.total_pl_pct.toFixed(2)}%)`;
+                        plEl.className = 'mt-2 text-sm font-medium text-neon-red';
+                    }
+                }
+
+                // Fetch Trades
+                const tradesRes = await fetch('/api/trades');
+                const trades = await tradesRes.json();
+                const tbody = document.getElementById('trades-table');
+                tbody.innerHTML = '';
+                
+                if (trades.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-slate-500">No trades recorded yet.</td></tr>';
+                } else {
+                    trades.slice(0, 15).forEach(t => {
+                        const sideColor = t.side === 'BUY' ? 'text-neon-green' : 'text-neon-red';
+                        const time = new Date(t.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                        tbody.innerHTML += `
+                            <tr class="hover:bg-slate-800/30 transition-colors">
+                                <td class="px-4 py-3 text-slate-400 whitespace-nowrap">${time}</td>
+                                <td class="px-4 py-3 font-bold">${t.symbol}</td>
+                                <td class="px-4 py-3 font-medium ${sideColor}">${t.side}</td>
+                                <td class="px-4 py-3 font-mono">$${t.notional.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                                <td class="px-4 py-3">
+                                    <div class="flex items-center">
+                                        <div class="w-16 h-1.5 bg-slate-700 rounded-full mr-2">
+                                            <div class="h-1.5 bg-blue-500 rounded-full" style="width: ${t.confidence}%"></div>
+                                        </div>
+                                        <span class="text-xs text-slate-400">${t.confidence.toFixed(0)}%</span>
+                                    </div>
+                                </td>
+                                <td class="px-4 py-3 text-xs text-slate-400 max-w-xs truncate" title="${t.reasoning}">${t.reasoning}</td>
+                            </tr>
+                        `;
+                    });
+                }
+
+                // Fetch Decisions
+                const decRes = await fetch('/api/decisions');
+                const decisions = await decRes.json();
+                const feed = document.getElementById('decisions-feed');
+                feed.innerHTML = '';
+
+                if (decisions.length === 0) {
+                    feed.innerHTML = '<div class="text-center text-slate-500 py-10">No decisions recorded yet.</div>';
+                } else {
+                    decisions.forEach(d => {
+                        const isTrade = d.decision === 'TRADE';
+                        const bgColor = isTrade ? 'bg-emerald-900/20 border-emerald-500/30' : 'bg-slate-800/40 border-slate-700';
+                        const badgeColor = isTrade ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700 text-slate-300';
+                        const time = new Date(d.timestamp).toLocaleTimeString();
+                        
+                        feed.innerHTML += `
+                            <div class="border rounded-lg p-3 ${bgColor}">
+                                <div class="flex justify-between items-start mb-2">
+                                    <div class="flex items-center space-x-2">
+                                        <span class="font-bold text-lg">${d.symbol}</span>
+                                        <span class="text-xs px-2 py-0.5 rounded font-medium ${badgeColor}">${d.decision}</span>
+                                    </div>
+                                    <span class="text-xs text-slate-500">${time}</span>
+                                </div>
+                                <div class="grid grid-cols-3 gap-2 mb-2 text-xs">
+                                    <div class="bg-slate-900/50 rounded p-1.5 text-center">
+                                        <div class="text-slate-400 mb-0.5">Quant</div>
+                                        <div class="font-mono ${d.quant_score > 70 ? 'text-neon-green' : ''}">${d.quant_score.toFixed(0)}</div>
+                                    </div>
+                                    <div class="bg-slate-900/50 rounded p-1.5 text-center">
+                                        <div class="text-slate-400 mb-0.5">News</div>
+                                        <div class="font-mono ${d.sentiment_score > 3 ? 'text-neon-green' : (d.sentiment_score < -3 ? 'text-neon-red' : '')}">${d.sentiment_score.toFixed(1)}</div>
+                                    </div>
+                                    <div class="bg-slate-900/50 rounded p-1.5 text-center">
+                                        <div class="text-slate-400 mb-0.5">Risk</div>
+                                        <div class="font-mono ${d.risk_grade === 'LOW' ? 'text-neon-green' : (d.risk_grade === 'HIGH' ? 'text-neon-red' : '')}">${d.risk_grade}</div>
+                                    </div>
+                                </div>
+                                <div class="text-xs text-slate-400 bg-slate-900/30 p-2 rounded border border-slate-800/50 break-words">
+                                    ${d.reasoning}
+                                </div>
+                            </div>
+                        `;
+                    });
+                }
+
+                // Fetch Chart Data
+                const chartRes = await fetch('/api/equity_chart');
+                const chartData = await chartRes.json();
+                if (chartData.length > 0 && equityChart) {
+                    equityChart.data.datasets[0].data = chartData;
+                    equityChart.update();
+                }
+
+            } catch (error) {
+                console.error("Dashboard fetch error:", error);
+                document.getElementById('bot-status-dot').className = 'status-dot status-offline';
+                document.getElementById('bot-status-text').textContent = 'OFFLINE';
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            initChart();
+            fetchDashboardData();
+            // Refresh every 10 seconds
+            setInterval(fetchDashboardData, 10000);
+        });
+    </script>
+</body>
+</html>

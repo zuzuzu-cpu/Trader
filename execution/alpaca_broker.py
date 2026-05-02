@@ -3,6 +3,7 @@ Alpaca Broker - Paper Trading Execution Engine
 
 Handles all interaction with Alpaca's Trading API:
 - Market orders with fractional share support (notional)
+- Short selling via market orders
 - Trailing stop orders with fill monitoring
 - Extended hours trading
 - Position management and portfolio queries
@@ -99,25 +100,54 @@ class AlpacaBroker:
             return None
 
     @retry_on_rate_limit
-    def place_trailing_stop(self, symbol: str, qty: float,
-                            trail_percent: float) -> Optional[str]:
+    def place_short_order(self, symbol: str, notional: float) -> Optional[str]:
         """
-        Places a trailing stop sell order to protect a long position.
-        Must be called after the buy order fills.
+        Places a market short sell order using notional (dollar amount).
         Returns the order ID or None on failure.
         """
         alpaca_limiter.acquire()
         try:
+            order_request = MarketOrderRequest(
+                symbol=symbol.replace("/", ""),
+                notional=round(notional, 2),
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+            )
+            order = self.trading_client.submit_order(order_request)
+            log.info(
+                f"SHORT order submitted: {symbol} ${notional:.2f} → order_id={order.id}",
+                extra={"symbol": symbol, "notional": notional, "order_id": str(order.id), "action": "SHORT"}
+            )
+            return str(order.id)
+        except APIError as e:
+            log.error(f"Alpaca API error placing short for {symbol}: {e}")
+            return None
+        except Exception as e:
+            log.error(f"Unexpected error placing short for {symbol}: {e}")
+            return None
+
+    @retry_on_rate_limit
+    def place_trailing_stop(self, symbol: str, qty: float,
+                            trail_percent: float,
+                            side: str = "sell") -> Optional[str]:
+        """
+        Places a trailing stop order to protect a position.
+        side='sell' for long protection, side='buy' for short protection.
+        Returns the order ID or None on failure.
+        """
+        alpaca_limiter.acquire()
+        order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
+        try:
             stop_request = TrailingStopOrderRequest(
                 symbol=symbol.replace("/", ""),
-                qty=qty,
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC,  # Good-til-cancelled
+                qty=abs(qty),
+                side=order_side,
+                time_in_force=TimeInForce.GTC,
                 trail_percent=trail_percent,
             )
             order = self.trading_client.submit_order(stop_request)
             log.info(
-                f"TRAILING STOP set: {symbol} qty={qty} trail={trail_percent}% → order_id={order.id}",
+                f"TRAILING STOP set: {symbol} qty={qty} trail={trail_percent}% side={side} → order_id={order.id}",
                 extra={"symbol": symbol, "action": "TRAILING_STOP", "order_id": str(order.id)}
             )
             return str(order.id)
@@ -131,10 +161,11 @@ class AlpacaBroker:
 
     def execute_trade(self, symbol: str, notional: float,
                       trailing_stop_pct: float,
+                      direction: str = "long",
                       max_wait_seconds: int = 30) -> dict:
         """
-        Full trade execution pipeline:
-        1. Place market buy order
+        Full trade execution pipeline for both longs and shorts:
+        1. Place market order (buy for long, sell for short)
         2. Wait for fill
         3. Place trailing stop order
 
@@ -142,24 +173,29 @@ class AlpacaBroker:
         """
         result = {
             "symbol": symbol,
-            "buy_order_id": None,
+            "direction": direction,
+            "order_id": None,
             "stop_order_id": None,
             "fill_price": None,
             "fill_qty": None,
             "status": "failed",
         }
 
-        # Step 1: Place buy order
-        buy_order_id = self.place_buy_order(symbol, notional)
-        if not buy_order_id:
-            result["status"] = "buy_failed"
+        # Step 1: Place order
+        if direction == "long":
+            order_id = self.place_buy_order(symbol, notional)
+        else:
+            order_id = self.place_short_order(symbol, notional)
+
+        if not order_id:
+            result["status"] = f"{direction}_order_failed"
             return result
-        result["buy_order_id"] = buy_order_id
+        result["order_id"] = order_id
 
         # Step 2: Wait for fill
-        fill_info = self._wait_for_fill(buy_order_id, max_wait_seconds)
+        fill_info = self._wait_for_fill(order_id, max_wait_seconds)
         if not fill_info:
-            log.warning(f"Buy order {buy_order_id} for {symbol} did not fill within {max_wait_seconds}s")
+            log.warning(f"{direction.upper()} order {order_id} for {symbol} did not fill within {max_wait_seconds}s")
             result["status"] = "not_filled"
             return result
 
@@ -169,17 +205,20 @@ class AlpacaBroker:
 
         # Step 3: Place trailing stop
         if fill_info["filled_qty"] > 0:
+            # For longs: trailing stop SELL; for shorts: trailing stop BUY
+            stop_side = "sell" if direction == "long" else "buy"
             stop_order_id = self.place_trailing_stop(
-                symbol, fill_info["filled_qty"], trailing_stop_pct
+                symbol, fill_info["filled_qty"], trailing_stop_pct, side=stop_side
             )
             result["stop_order_id"] = stop_order_id
             if stop_order_id:
                 result["status"] = "complete"
                 log.info(
-                    f"Trade complete: {symbol} filled @ ${fill_info['filled_avg_price']:.2f} "
-                    f"qty={fill_info['filled_qty']:.4f}, "
-                    f"trailing stop @ {trailing_stop_pct}%"
+                    f"Trade complete: {direction.upper()} {symbol} filled @ ${fill_info['filled_avg_price']:.2f} "
+                    f"qty={fill_info['filled_qty']:.4f}, trailing stop @ {trailing_stop_pct}%"
                 )
+
+        return result
 
         return result
 
