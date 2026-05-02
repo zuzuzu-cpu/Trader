@@ -1,6 +1,6 @@
 alpaca-py>=0.24.0
 pandas>=2.2.0
-pandas-ta>=0.3.14b0
+pandas-ta
 numpy>=1.26.0
 yfinance>=0.2.40
 openai>=1.30.0
