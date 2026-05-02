@@ -107,12 +107,12 @@ NEWS_HEADLINE_COUNT = 10          # Headlines to send to DeepSeek
 
 # ─── Short Selling ──────────────────────────────────────────────────────────
 ENABLE_SHORT_SELLING = os.getenv("ENABLE_SHORT_SELLING", "true").lower() == "true"
-SHORT_CONFIDENCE_THRESHOLD = float(os.getenv("SHORT_CONFIDENCE_THRESHOLD", 82))
+SHORT_CONFIDENCE_THRESHOLD = float(os.getenv("SHORT_CONFIDENCE_THRESHOLD", 60.0))
 MAX_SHORT_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", 10))
 
 
 # ─── Portfolio & Risk Management ─────────────────────────────────────────────
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 80))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 60.0))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", 0.02))       # 2% max per trade
 MIN_POSITION_USD = float(os.getenv("MIN_POSITION_USD", 10.0))       # Minimum $10 per trade
 MAX_PORTFOLIO_POSITIONS = int(os.getenv("MAX_PORTFOLIO_POSITIONS", 25))
