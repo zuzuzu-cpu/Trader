@@ -65,8 +65,11 @@ class TelegramAlert:
         )
 
     def trade_skipped(self, symbol: str, reason: str):
-        """Alert when a high-scoring trade is skipped (optional, can be noisy)."""
-        pass  # Only enable if you want verbose alerts
+        """Alert when a trade candidate is skipped."""
+        self._send(
+            f"⏭️ <b>SKIP</b>: <code>{symbol}</code>\n"
+            f"Reason: {reason[:200]}"
+        )
 
     def circuit_breaker(self, drawdown_pct: float, equity: float):
         """Alert when the drawdown circuit breaker triggers."""

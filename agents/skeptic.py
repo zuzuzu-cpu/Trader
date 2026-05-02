@@ -57,7 +57,7 @@ class Skeptic:
         }
         """
         flags = []
-        risk_score = 70  # Start optimistic, deduct for issues
+        risk_score = 75  # Start optimistic, deduct for issues
 
         # ─── 1. Spread Analysis ──────────────────────────────────────
         spread_pct = 0.0
@@ -73,7 +73,7 @@ class Skeptic:
                     risk_score -= 10
             else:
                 flags.append("NO_QUOTE_DATA")
-                risk_score -= 5
+                # Don't penalize for missing quotes (weekend/after hours)
 
         # ─── 2. Sector Concentration Check ───────────────────────────
         sector = quant_result.get("sector", "Unknown")
@@ -81,7 +81,7 @@ class Skeptic:
             sector_exposure = self._check_sector_concentration(sector)
             if sector_exposure > config.MAX_SECTOR_CONCENTRATION:
                 flags.append(f"SECTOR_OVERWEIGHT({sector}:{sector_exposure:.0%})")
-                risk_score -= 15
+                risk_score -= 10
 
         # ─── 3. Position Count Check ─────────────────────────────────
         if self.broker:
@@ -89,13 +89,13 @@ class Skeptic:
                 positions = self.broker.get_positions()
                 if len(positions) >= config.MAX_PORTFOLIO_POSITIONS:
                     flags.append(f"MAX_POSITIONS({len(positions)})")
-                    risk_score -= 20
+                    risk_score -= 15
 
                 # Check if we already hold this symbol
                 held_symbols = [p.symbol for p in positions]
                 if symbol.replace("/", "") in held_symbols:
                     flags.append("ALREADY_HELD")
-                    risk_score -= 15
+                    risk_score -= 10
             except Exception:
                 pass
 
@@ -108,7 +108,7 @@ class Skeptic:
         max_dd = signals.get("max_drawdown", 0)
         if max_dd < -0.25:
             flags.append(f"SEVERE_DRAWDOWN({max_dd:.0%})")
-            risk_score -= 15
+            risk_score -= 10
 
         # ─── 5. Earnings Risk ────────────────────────────────────────
         direction = quant_result.get("direction", "long")
@@ -172,9 +172,9 @@ class Skeptic:
         # ─── Final Grade ─────────────────────────────────────────────
         risk_score = max(0, min(100, risk_score))
 
-        if risk_score >= 65:
+        if risk_score >= 60:
             grade = "LOW"
-        elif risk_score >= 40:
+        elif risk_score >= 35:
             grade = "MEDIUM"
         else:
             grade = "HIGH"
@@ -201,8 +201,9 @@ class Skeptic:
 
         signals = quant_result.get("signals", {})
 
-        system_prompt = """You are 'The Skeptic', an elite AI Risk Manager.
-Your job is to find reasons NOT to take a trade. Be critical, thorough, and data-driven.
+        system_prompt = """You are 'The Skeptic', an AI Risk Manager for a paper trading system.
+Your job is to identify genuine risks, but also recognize genuine opportunities.
+Be balanced: flag real dangers but don't manufacture problems where none exist.
 Respond ONLY in valid JSON format."""
 
         user_prompt = f"""Review this potential LONG trade for {symbol} ({asset_type}):

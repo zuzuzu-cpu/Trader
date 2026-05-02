@@ -126,7 +126,7 @@ def run_cycle():
                 quant.evaluate_stock, universe["stocks"],
                 config.BATCH_SIZE, start_str, end_str
             )
-            candidates.extend([r for r in stock_results if r.get("score", 0) >= config.QUANT_PASS_SCORE or (r.get("direction") == "short" and r.get("score", 0) >= config.QUANT_PASS_SCORE)])
+            candidates.extend([r for r in stock_results if r.get("score", 0) >= config.QUANT_PASS_SCORE])
             stats["errors"] += len(universe["stocks"]) - len(stock_results)
 
         # Screen ETFs in parallel
@@ -135,7 +135,7 @@ def run_cycle():
                 quant.evaluate_etf, universe["etfs"],
                 config.BATCH_SIZE, start_str, end_str
             )
-            candidates.extend([r for r in etf_results if r.get("score", 0) >= config.QUANT_PASS_SCORE or (r.get("direction") == "short" and r.get("score", 0) >= config.QUANT_PASS_SCORE)])
+            candidates.extend([r for r in etf_results if r.get("score", 0) >= config.QUANT_PASS_SCORE])
             stats["errors"] += len(universe["etfs"]) - len(etf_results)
 
         # Screen crypto in parallel
@@ -144,7 +144,7 @@ def run_cycle():
                 quant.evaluate_crypto, universe["crypto"],
                 config.BATCH_SIZE, start_str, end_str
             )
-            candidates.extend([r for r in crypto_results if r.get("score", 0) >= config.QUANT_PASS_SCORE or (r.get("direction") == "short" and r.get("score", 0) >= config.QUANT_PASS_SCORE)])
+            candidates.extend([r for r in crypto_results if r.get("score", 0) >= config.QUANT_PASS_SCORE])
             stats["errors"] += len(universe["crypto"]) - len(crypto_results)
 
         # Sort by score (best first)
@@ -262,6 +262,7 @@ def run_cycle():
                 else:
                     stats["skipped"] += 1
                     log.info(f"  ○ Skipped: {verdict['reasoning'][:100]}")
+                    telegram.trade_skipped(symbol, verdict["reasoning"])
 
             except Exception as e:
                 stats["errors"] += 1

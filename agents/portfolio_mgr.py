@@ -114,10 +114,13 @@ class PortfolioManager:
                 block_reason = f"CIRCUIT_BREAKER: Drawdown {current_drawdown:.1%} > {config.MAX_DRAWDOWN_PCT:.0%} limit"
                 log.warning(block_reason)
 
-        # Risk grade veto
-        if risk_grade == "HIGH" and confidence < 90:
-            should_trade = False
-            block_reason = f"HIGH_RISK_VETO: Grade={risk_grade}, need confidence > 90 but got {confidence:.1f}"
+        # Risk grade penalty (softer than hard veto)
+        if risk_grade == "HIGH":
+            # Apply a confidence penalty instead of a hard veto
+            confidence -= 10
+            if confidence < threshold:
+                should_trade = False
+                block_reason = f"HIGH_RISK: Grade={risk_grade}, confidence {confidence:.1f}% after penalty < {threshold}%"
 
         # Minimum quant score gate
         min_quant = 40 if direction == "long" else 60  # Shorts need higher conviction
@@ -217,8 +220,11 @@ class PortfolioManager:
 
         signals = quant_result.get("signals", {})
 
-        prompt = f"""You are the Portfolio Manager of an elite autonomous trading system.
-All quantitative analysis and AI risk assessment is complete. You must make the FINAL decision.
+        prompt = f"""You are the Portfolio Manager of an autonomous trading system.
+The quantitative analysis and risk assessment are complete. You must make the FINAL decision.
+IMPORTANT: This is a paper trading account for learning. You should APPROVE trades that have 
+reasonable quantitative support, even if conditions aren't perfect. Only REJECT if there is a 
+clear, specific danger (e.g. earnings tomorrow, extreme overbought, fraud news).
 
 TRADE PROPOSAL: {direction.upper()} {symbol}
 Confidence Score: {confidence:.1f}%
@@ -248,7 +254,7 @@ RISK ASSESSMENT:
 Respond with ONLY this JSON:
 {{
     "verdict": "APPROVE" or "REJECT",
-    "confidence_adjustment": <integer from -10 to +5>,
+    "confidence_adjustment": <integer from -5 to +10>,
     "reasoning": "<2-3 sentences explaining your decision>"
 }}"""
 
