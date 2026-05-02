@@ -1,16 +1,24 @@
-version: '3.8'
-
 services:
   sentinel-autotrader:
     build: .
     container_name: sentinel-bot
-    restart: always
+    restart: unless-stopped
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data        # Persist trade journal, logs, cache
     logging:
       driver: "json-file"
       options:
-        max-size: "10m"
-        max-file: "3"
+        max-size: "50m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.5"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import config; print('OK')"]
+      interval: 5m
+      timeout: 10s
+      retries: 3

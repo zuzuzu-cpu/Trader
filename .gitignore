@@ -2,8 +2,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
 
 # Distribution / packaging
@@ -20,13 +18,11 @@ parts/
 sdist/
 var/
 wheels/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
 
-# Environment variables
+# Environment variables (CRITICAL: never commit secrets)
 .env
 .env.*
 !.env.example
@@ -35,16 +31,20 @@ MANIFEST
 venv/
 env/
 ENV/
-env.bak/
-venv.bak/
 
 # IDEs
 .idea/
 .vscode/
 *.swp
 *.swo
+.DS_Store
 
-# Project specific
-data/*.csv
-data/*.json
-data/*.parquet
+# Project data (persistent but not in git)
+data/cache/
+data/logs/
+data/*.db
+data/*.db-journal
+
+# Temporary
+*.tmp
+*.bak

@@ -1,21 +1,37 @@
-# Use an official Python runtime as a parent image
-FROM python:3.11-slim
+# Multi-stage build for smaller image
+FROM python:3.11-slim AS builder
 
-# Set the working directory in the container
 WORKDIR /app
 
-# Copy the requirements file into the container
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
 
-# Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Production stage
+FROM python:3.11-slim
 
-# Copy the rest of the application code
+WORKDIR /app
+
+# Copy installed packages from builder
+COPY --from=builder /root/.local /root/.local
+ENV PATH=/root/.local/bin:$PATH
+
+# Copy application code
 COPY . .
 
-# Set environment variables (these should also be provided at runtime via .env or docker-compose)
-ENV PYTHONUNBUFFERED=1
+# Create data directory
+RUN mkdir -p /app/data/cache /app/data/logs
 
-# Command to run the application
-# We use a simple loop in main.py or could use a cron job/scheduler here
+# Set environment
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Health check
+HEALTHCHECK --interval=5m --timeout=10s --retries=3 \
+    CMD python -c "import config; print('OK')" || exit 1
+
 CMD ["python", "main.py"]
