@@ -53,7 +53,7 @@ Since you are likely using a Private GitHub repository, you will need to authent
 
 If using HTTPS with a PAT:
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME.git sentinel
+git clone https://github.com/zuzuzu-cpu/Trader.git sentinel
 cd sentinel
 ```
 *(When prompted for a password, paste your GitHub Personal Access Token).*
