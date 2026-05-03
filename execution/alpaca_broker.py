@@ -104,12 +104,12 @@ class AlpacaBroker:
         alpaca_limiter.acquire()
 
         # Determine time in force
-        tif = TimeInForce.DAY
-        if extended_hours and config.TRADE_EXTENDED_HOURS:
-            # For extended hours, we need to use limit orders (Alpaca requirement)
-            # For simplicity, we'll use DAY orders during market hours
-            tif = TimeInForce.DAY
-
+        is_crypto = "/" in symbol or any(c in symbol for c in ["USD", "BTC", "ETH"]) and len(symbol) > 5
+        tif = TimeInForce.GTC if is_crypto else TimeInForce.DAY
+        
+        if extended_hours and config.TRADE_EXTENDED_HOURS and not is_crypto:
+            tif = TimeInForce.DAY # DAY is required for extended hours stocks
+            
         try:
             order_request = MarketOrderRequest(
                 symbol=self._format_symbol(symbol),
