@@ -345,33 +345,20 @@ class DataFetcher:
 
     def get_news_headlines(self, query: str, max_results: int = 10) -> list[dict]:
         """
-        Fetches news headlines from multiple sources.
-        Returns list of {title, source, published_at, description}
+        Fetches news headlines from multiple sources (NewsAPI, Yahoo Finance).
         """
         headlines = []
+        # Clean query (e.g. BTC/USD -> BTC)
+        clean_query = query.split("/")[0].replace("-", " ")
 
-        # Source 1: Yahoo Finance (free, no API key needed)
-        try:
-            ticker = yf.Ticker(query.replace("/", "-"))
-            news = ticker.news or []
-            for article in news[:max_results]:
-                headlines.append({
-                    "title": article.get("title", ""),
-                    "source": article.get("publisher", "Yahoo Finance"),
-                    "published_at": article.get("providerPublishTime", ""),
-                    "description": article.get("title", ""),  # YF doesn't always have description
-                })
-        except Exception as e:
-            log.debug(f"Yahoo Finance news fetch failed for {query}: {e}")
-
-        # Source 2: NewsAPI (if key is available)
-        if config.NEWSAPI_KEY and len(headlines) < max_results:
+        # Source 1: NewsAPI (Primary if key is available)
+        if config.NEWSAPI_KEY:
             try:
                 newsapi_limiter.acquire()
                 resp = requests.get(
                     "https://newsapi.org/v2/everything",
                     params={
-                        "q": query,
+                        "q": clean_query,
                         "sortBy": "publishedAt",
                         "pageSize": max_results,
                         "language": "en",
@@ -389,7 +376,25 @@ class DataFetcher:
                             "description": article.get("description", ""),
                         })
             except Exception as e:
-                log.debug(f"NewsAPI fetch failed for {query}: {e}")
+                log.debug(f"NewsAPI fetch failed for {clean_query}: {e}")
+
+        # Source 2: Yahoo Finance (Fallback)
+        if len(headlines) < max_results:
+            try:
+                ticker = yf.Ticker(query.replace("/", "-"))
+                news = ticker.news or []
+                for article in news[:max_results]:
+                    # Prevent duplicates
+                    if any(h["title"] == article.get("title", "") for h in headlines):
+                        continue
+                    headlines.append({
+                        "title": article.get("title", ""),
+                        "source": article.get("publisher", "Yahoo Finance"),
+                        "published_at": article.get("providerPublishTime", ""),
+                        "description": article.get("title", ""),
+                    })
+            except Exception as e:
+                log.debug(f"Yahoo Finance news fetch failed for {query}: {e}")
 
         return headlines[:max_results]
 
