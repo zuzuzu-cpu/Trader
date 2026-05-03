@@ -110,10 +110,21 @@ class UniverseScanner:
             "crypto": [...]
         }
         """
+        stocks = self.scan_stocks(max_stocks)
+        etfs = self.scan_etfs()
+        crypto_symbols = self.scan_crypto()
+
+        # Filter out stablecoins (USDC, USDT, DAI, GUSD, etc.) as they are not tradable for profit
+        stablecoins = ["USDC", "USDT", "DAI", "GUSD", "USDP", "PYUSD"]
+        crypto_symbols = [
+            s for s in crypto_symbols 
+            if not any(sc in s for sc in stablecoins)
+        ]
+
         universe = {
-            "stocks": self.scan_stocks(max_stocks),
-            "etfs": self.scan_etfs(),
-            "crypto": self.scan_crypto(),
+            "stocks": list(stocks)[:max_stocks],
+            "etfs": list(etfs),
+            "crypto": crypto_symbols
         }
 
         total = sum(len(v) for v in universe.values())
