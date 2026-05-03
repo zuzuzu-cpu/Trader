@@ -61,7 +61,22 @@ class AsyncExecutor:
             batch = items[i:i + batch_size]
             batch_results = self.map_symbols(func, batch, *args, **kwargs)
             all_results.extend(batch_results)
-            log.info(f"  Batch {i//batch_size + 1}: processed {len(batch)} symbols, "
+            
+            current_batch = i // batch_size + 1
+            log.info(f"  Batch {current_batch}: processed {len(batch)} symbols, "
                      f"{len(batch_results)} passed")
+                     
+            # Ping live_state to prevent dashboard timeout
+            from utils.live_state import live_state
+            total_batches = (len(items) + batch_size - 1) // batch_size
+            
+            # Map progress from 20% to 50% during screening
+            progress = 20 + int(30 * (current_batch / total_batches))
+            live_state.update(
+                step="Step 2: Quant Screening",
+                details=f"Calculating indicators: Batch {current_batch}/{total_batches} ({len(items)} total assets)",
+                progress=progress,
+                active_symbol=batch[-1] if batch else None
+            )
 
         return all_results
