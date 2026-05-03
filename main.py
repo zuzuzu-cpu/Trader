@@ -212,8 +212,15 @@ def run_cycle():
         # ─── V5: Start WebSocket Live Stream (first cycle only) ──────
         if live_stream.cache_size == 0 and not _shutdown:
             log.info("V5: Starting WebSocket live stream...")
+            # Get currently held positions to ensure we track their live prices instantly
+            open_positions = broker.get_positions()
+            held_symbols = [p.symbol for p in open_positions] if open_positions else []
+            
+            # Merge held stocks with the top universe candidates (remove duplicates)
+            stock_stream_list = list(set(held_symbols + universe["stocks"][:500]))
+            
             live_stream.start(
-                stock_symbols=universe["stocks"][:500],
+                stock_symbols=stock_stream_list,
                 crypto_symbols=universe["crypto"],
             )
 
@@ -389,6 +396,10 @@ def run_cycle():
                             risk["grade"], verdict["confidence"],
                             verdict["reasoning"]
                         )
+                        # V5: Live Stream dynamic subscription
+                        if asset_type in ["stock", "etf"]:
+                            live_stream.subscribe([symbol])
+                        
                         # V5: Rich trade explanation card
                         telegram.trade_card(
                             symbol, side_label, verdict["notional"],

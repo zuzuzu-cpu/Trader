@@ -40,6 +40,7 @@ class LiveStreamManager:
         self._stock_thread: Optional[threading.Thread] = None
         self._crypto_thread: Optional[threading.Thread] = None
         self._spike_callbacks: list = []    # Registered callbacks for spike events
+        self._stock_stream = None           # Reference to the active stock stream
 
     # ─── Public API ──────────────────────────────────────────────────────────
 
@@ -78,7 +79,21 @@ class LiveStreamManager:
     def stop(self):
         """Signals both stream threads to stop."""
         self._running = False
+        if self._stock_stream:
+            self._stock_stream.stop()
         log.info("Live stream manager stopping.")
+
+    def subscribe(self, symbols: list[str]):
+        """Dynamically add new stock symbols to the live websocket stream."""
+        if not self._running or not self._stock_stream:
+            log.warning("Cannot subscribe: stream is not running.")
+            return
+            
+        try:
+            self._stock_stream.subscribe_bars(self._handle_stock_bar, *symbols)
+            log.info(f"Dynamically subscribed to {len(symbols)} new symbols: {symbols}")
+        except Exception as e:
+            log.error(f"Failed to dynamically subscribe to {symbols}: {e}")
 
     def get_latest_bar(self, symbol: str) -> Optional[dict]:
         """
@@ -128,6 +143,16 @@ class LiveStreamManager:
 
     # ─── Stock WebSocket Thread ───────────────────────────────────────────────
 
+    async def _handle_stock_bar(self, bar):
+        self._update_cache(bar.symbol, {
+            "open": float(bar.open),
+            "high": float(bar.high),
+            "low": float(bar.low),
+            "close": float(bar.close),
+            "volume": float(bar.volume),
+            "ts": str(bar.timestamp),
+        })
+
     def _run_stock_stream(self, symbols: list[str]):
         """Runs the Alpaca stock WebSocket stream in a loop with auto-reconnect."""
         while self._running:
@@ -140,22 +165,13 @@ class LiveStreamManager:
                     config.ALPACA_SECRET_KEY,
                     feed=DataFeed.IEX,  # IEX is free; switch to SIP for paid plans
                 )
-
-                async def handle_bar(bar):
-                    self._update_cache(bar.symbol, {
-                        "open": float(bar.open),
-                        "high": float(bar.high),
-                        "low": float(bar.low),
-                        "close": float(bar.close),
-                        "volume": float(bar.volume),
-                        "ts": str(bar.timestamp),
-                    })
+                self._stock_stream = stream
 
                 # Subscribe in batches of 100 (Alpaca limit per subscription)
                 batch_size = 100
                 for i in range(0, len(symbols), batch_size):
                     batch = symbols[i:i + batch_size]
-                    stream.subscribe_bars(handle_bar, *batch)
+                    stream.subscribe_bars(self._handle_stock_bar, *batch)
 
                 log.info(f"Stock stream connected. Subscribed to {len(symbols)} symbols.")
                 stream.run()  # Blocks until disconnect
