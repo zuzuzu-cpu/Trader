@@ -151,22 +151,24 @@ Weight signals by source credibility:
 
         try:
             data = json.loads(raw)
+            events_raw = data.get("events", [])
+            events = events_raw if isinstance(events_raw, list) else [str(events_raw)]
+            
             return {
                 "score": max(-10, min(10, int(data.get("score", 0)))),
                 "confidence": max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
-                "events": list(data.get("events", [])),
+                "events": events,
                 "summary": str(data.get("summary", ""))[:200],
             }
         except (json.JSONDecodeError, ValueError) as e:
             log.warning(f"Failed to parse sentiment response: {e}")
-            # Fallback: try to extract just a number
-            numbers = re.findall(r'-?\d+', raw)
-            score = int(numbers[0]) if numbers else 0
+            # Fallback: Return neutral score if the JSON is fully malformed.
+            # Using regex to extract numbers is dangerous as it might grab unrelated digits from reasoning.
             return {
-                "score": max(-10, min(10, score)),
-                "confidence": 0.3,
+                "score": 0,
+                "confidence": 0.1,  # Low confidence due to parse failure
                 "events": [],
-                "summary": raw[:100],
+                "summary": f"Parse error: {raw[:100]}",
             }
 
     def _format_headlines(self, headlines: list[dict]) -> str:

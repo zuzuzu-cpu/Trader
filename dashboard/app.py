@@ -10,7 +10,9 @@ DB_PATH = os.environ.get("DB_PATH", "../data/sentinel.db")
 app = Flask(__name__)
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+    # Adding a timeout of 15 seconds to prevent "database is locked" errors
+    # if the main bot thread is actively writing to the database.
+    conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
     return conn
 

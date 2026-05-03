@@ -195,6 +195,9 @@ OPTIONS_VOLUME_THRESHOLD = float(os.getenv("OPTIONS_VOLUME_THRESHOLD", 3.0))  # 
 TRADE_CARDS_ENABLED = os.getenv("TRADE_CARDS_ENABLED", "true").lower() == "true"
 SKIP_CARD_MIN_CONFIDENCE = float(os.getenv("SKIP_CARD_MIN_CONFIDENCE", 45.0)) # Only card near-misses
 
+# ─── V5: Closing AI Agent ────────────────────────────────────────────────────
+CLOSING_AGENT_ENABLED = os.getenv("CLOSING_AGENT_ENABLED", "true").lower() == "true"
+CLOSING_CONFIDENCE_THRESHOLD = float(os.getenv("CLOSING_CONFIDENCE_THRESHOLD", 75.0))
 
 # ─── Paths ──────────────────────────────────────────────────────────────────
 import pathlib

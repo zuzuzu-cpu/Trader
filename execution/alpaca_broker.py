@@ -273,14 +273,22 @@ class AlpacaBroker:
                 return result
 
         # ─── Step 0.5: Clear existing orders to avoid 'Wash Trade' errors ─
+        existing_qty = 0.0
         try:
+            # Check existing position before clearing orders
+            existing_pos = self.get_position(symbol)
+            if existing_pos:
+                existing_qty = abs(float(existing_pos.qty))
+
             # Cancel any open orders for this symbol before starting a new trade
+            alpaca_limiter.acquire()
             open_orders = self.trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[self._format_symbol(symbol)]))
             for o in open_orders:
                 log.info(f"Clearing old order {o.id} for {symbol} to prevent wash trade error.")
+                alpaca_limiter.acquire()
                 self.trading_client.cancel_order_by_id(o.id)
         except Exception as e:
-            log.debug(f"No existing orders to clear for {symbol}: {e}")
+            log.debug(f"Error checking position/orders for {symbol}: {e}")
             
         # ─── Step 1: Place order ─────────────────────────────────────
         if direction == "long":
@@ -309,18 +317,29 @@ class AlpacaBroker:
         # ─── Step 3: Exit strategy ───────────────────────────────────
         if fill_info["filled_qty"] > 0:
             stop_side = "sell" if direction == "long" else "buy"
-            total_qty = fill_info["filled_qty"]
+            total_qty = fill_info["filled_qty"] + existing_qty
+
+            if not is_crypto:
+                total_qty = math.floor(total_qty)
+                if total_qty == 0:
+                    log.warning(f"Cannot place limit/stop order for <1 share of {symbol}. Order will be unmanaged.")
+                    result["status"] = "complete"
+                    return result
 
             # ─── Partial profit taking ───────────────────────────
             if config.PARTIAL_PROFIT_ENABLED and total_qty > 0.01:
-                take_profit_qty = round(total_qty * config.TAKE_PROFIT_RATIO, 4)
-                remainder_qty = round(total_qty - take_profit_qty, 4)
+                if not is_crypto:
+                    take_profit_qty = math.floor(total_qty * config.TAKE_PROFIT_RATIO)
+                    remainder_qty = math.floor(total_qty - take_profit_qty)
+                else:
+                    take_profit_qty = round(total_qty * config.TAKE_PROFIT_RATIO, 4)
+                    remainder_qty = round(total_qty - take_profit_qty, 4)
 
                 # Ensure we have valid quantities
-                if take_profit_qty < 0.001:
+                if take_profit_qty < (1.0 if not is_crypto else 0.001):
                     take_profit_qty = 0
                     remainder_qty = total_qty
-                if remainder_qty < 0.001:
+                if remainder_qty < (1.0 if not is_crypto else 0.001):
                     take_profit_qty = total_qty
                     remainder_qty = 0
 
@@ -370,17 +389,29 @@ class AlpacaBroker:
                         f"Trail: {remainder_qty:.4f} @ {config.REMAINDER_TRAIL_PCT}%)"
                     )
             else:
-                # ─── Standard single trailing stop ───────────────
-                stop_order_id = self.place_trailing_stop(
-                    symbol, total_qty, trailing_stop_pct, side=stop_side
-                )
-                if stop_order_id:
-                    result["status"] = "complete"
-                    log.info(
-                        f"Trade complete: {direction.upper()} {symbol} filled @ "
-                        f"${fill_info['filled_avg_price']:.2f} "
-                        f"qty={total_qty:.4f}, trailing stop @ {trailing_stop_pct}%"
+                # ─── Standard single exit strategy ───────────────
+                if is_crypto:
+                    # Trailing stops unsupported for crypto, use a take-profit limit order
+                    tp_price = fill_info["filled_avg_price"] * (1 + config.PROFIT_TARGET_PCT / 100) if direction == "long" else fill_info["filled_avg_price"] * (1 - config.PROFIT_TARGET_PCT / 100)
+                    stop_order_id = self.place_limit_order(symbol, total_qty, tp_price, side=stop_side)
+                    if stop_order_id:
+                        result["status"] = "complete"
+                        log.info(
+                            f"Trade complete: Crypto {direction.upper()} {symbol} filled @ "
+                            f"${fill_info['filled_avg_price']:.2f} "
+                            f"qty={total_qty:.4f}, full take-profit limit @ ${tp_price:.2f}"
+                        )
+                else:
+                    stop_order_id = self.place_trailing_stop(
+                        symbol, total_qty, trailing_stop_pct, side=stop_side
                     )
+                    if stop_order_id:
+                        result["status"] = "complete"
+                        log.info(
+                            f"Trade complete: {direction.upper()} {symbol} filled @ "
+                            f"${fill_info['filled_avg_price']:.2f} "
+                            f"qty={total_qty:.4f}, trailing stop @ {trailing_stop_pct}%"
+                        )
                 elif is_crypto:
                     # For crypto, we skip trailing stops but the trade is still 'complete'
                     result["status"] = "complete"
@@ -433,7 +464,7 @@ class AlpacaBroker:
         """Returns position for a specific symbol."""
         alpaca_limiter.acquire()
         try:
-            return self.trading_client.get_open_position(symbol.replace("/", ""))
+            return self.trading_client.get_open_position(self._format_symbol(symbol))
         except Exception:
             return None
 
@@ -442,11 +473,82 @@ class AlpacaBroker:
         """Closes a specific position."""
         alpaca_limiter.acquire()
         try:
-            self.trading_client.close_position(symbol.replace("/", ""))
+            # First cancel any open orders so we can fully close
+            open_orders = self.trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[self._format_symbol(symbol)]))
+            for o in open_orders:
+                self.trading_client.cancel_order_by_id(o.id)
+
+            self.trading_client.close_position(self._format_symbol(symbol))
             log.info(f"Position closed: {symbol}")
             return True
         except Exception as e:
             log.error(f"Failed to close position {symbol}: {e}")
+            return False
+
+    @retry_on_rate_limit
+    def close_position_partial(self, symbol: str, fraction: float) -> bool:
+        """Closes a fraction of a specific position using a market order."""
+        alpaca_limiter.acquire()
+        try:
+            pos = self.get_position(symbol)
+            if not pos:
+                return False
+            qty = float(pos.qty)
+            side = "sell" if qty > 0 else "buy"
+            
+            close_qty = abs(qty) * fraction
+            is_crypto = "/" in symbol or any(c in symbol for c in ["USD", "BTC", "ETH"]) and len(symbol) > 5
+            if not is_crypto:
+                close_qty = math.floor(close_qty)
+                if close_qty < 1:
+                    log.warning(f"Cannot close partial position of < 1 share for {symbol}")
+                    return False
+            else:
+                close_qty = round(close_qty, 4)
+
+            # First cancel any open orders so we have available shares to sell
+            open_orders = self.trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[self._format_symbol(symbol)]))
+            for o in open_orders:
+                self.trading_client.cancel_order_by_id(o.id)
+
+            # Place opposite market order
+            tif = TimeInForce.GTC if is_crypto else TimeInForce.DAY
+            order_request = MarketOrderRequest(
+                symbol=self._format_symbol(symbol),
+                qty=close_qty,
+                side=OrderSide.SELL if side == "sell" else OrderSide.BUY,
+                time_in_force=tif,
+            )
+            self.trading_client.submit_order(order_request)
+            log.info(f"Partially closed position: {symbol} (qty: {close_qty})")
+            return True
+        except Exception as e:
+            log.error(f"Failed to partially close position {symbol}: {e}")
+            return False
+
+    @retry_on_rate_limit
+    def replace_trailing_stop(self, symbol: str, new_trail_percent: float) -> bool:
+        """Cancels existing trailing stops for a symbol and sets a new one."""
+        alpaca_limiter.acquire()
+        try:
+            pos = self.get_position(symbol)
+            if not pos:
+                return False
+            
+            # Cancel open orders
+            open_orders = self.trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[self._format_symbol(symbol)]))
+            for o in open_orders:
+                self.trading_client.cancel_order_by_id(o.id)
+                
+            # Place new trailing stop
+            qty = abs(float(pos.qty))
+            side = "sell" if float(pos.qty) > 0 else "buy"
+            
+            self.place_trailing_stop(symbol, qty, new_trail_percent, side=side)
+            log.info(f"Replaced trailing stop for {symbol} to {new_trail_percent}%")
+            return True
+        except Exception as e:
+            log.error(f"Failed to replace trailing stop for {symbol}: {e}")
             return False
 
     @retry_on_rate_limit

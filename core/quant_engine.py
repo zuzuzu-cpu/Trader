@@ -283,6 +283,14 @@ class QuantEngine:
                 log.warning(f"Missing columns: {required - df_cols}")
                 return None
 
+            # Clean data to prevent NaN propagation
+            df = df.copy()
+            df.columns = [c.lower() for c in df.columns]
+            df.ffill(inplace=True)
+            df.dropna(subset=list(required), inplace=True)
+            if len(df) < 20:
+                return None
+
             close = df["close"].astype(float)
             high = df["high"].astype(float)
             low = df["low"].astype(float)

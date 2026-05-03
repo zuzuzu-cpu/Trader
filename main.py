@@ -38,6 +38,7 @@ from agents.portfolio_mgr import PortfolioManager
 from agents.insider_tracker import InsiderTracker
 from agents.social_sentinel import SocialSentinel
 from agents.options_flow import OptionsFlow
+from agents.closing_agent import ClosingAgent
 from execution.alpaca_broker import AlpacaBroker
 from utils.logger import get_logger, TradeJournal
 from utils.async_executor import AsyncExecutor
@@ -163,6 +164,7 @@ def run_cycle():
     insider_tracker = InsiderTracker()
     social_sentinel = SocialSentinel()
     options_flow = OptionsFlow()
+    closing_agent = ClosingAgent()
     premarket_scanner = PreMarketScanner(fetcher=fetcher, broker=broker)
 
     journal.start_cycle(cycle_id)
@@ -191,6 +193,76 @@ def run_cycle():
                 telegram.circuit_breaker(drawdown, equity)
                 journal.end_cycle(cycle_id, 0, 0, 0, 0, 0)
                 return
+
+        # ─── Step 0.5: Proactive Exit Management ─────────────────────
+        if config.CLOSING_AGENT_ENABLED and not _shutdown:
+            log.info("Step 0.5: AI Closing Agent evaluating open positions...")
+            live_state.update(step="Step 0.5: Exit Management", details="Evaluating open positions for early exit...", progress=2)
+            
+            import sqlite3
+            positions = broker.get_positions()
+            for pos in positions:
+                if _shutdown: break
+                symbol = pos.symbol
+                qty = float(pos.qty)
+                current_price = float(pos.current_price)
+                avg_entry_price = float(pos.avg_entry_price)
+                pnl_pct = float(pos.unrealized_plpc) * 100
+                direction = "long" if qty > 0 else "short"
+                
+                asset_type = "crypto" if "/" in symbol or len(symbol) > 5 else "stock"
+                
+                hold_mins = 1440 
+                try:
+                    with sqlite3.connect(str(journal.db_path)) as conn:
+                        conn.row_factory = sqlite3.Row
+                        last_trade = conn.execute("SELECT timestamp FROM trades WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1", (symbol,)).fetchone()
+                        if last_trade and last_trade["timestamp"]:
+                            from datetime import datetime, timezone
+                            entry_time = datetime.fromisoformat(last_trade["timestamp"].replace("Z", "+00:00"))
+                            hold_mins = int((datetime.now(timezone.utc) - entry_time).total_seconds() / 60)
+                except Exception as e:
+                    log.debug(f"Could not calculate hold time for {symbol}: {e}")
+
+                # Fetch required signals for AI evaluation
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=config.LOOKBACK_DAYS)
+                start_str = start_date.strftime('%Y-%m-%d')
+                end_str = end_date.strftime('%Y-%m-%d')
+                
+                if asset_type == "stock":
+                    fetcher.prefetch_stock_bars([symbol], start_str, end_str)
+                    q_res = quant.evaluate_stock(symbol, start_str, end_str)
+                else:
+                    fetcher.prefetch_crypto_bars([symbol], start_str, end_str)
+                    q_res = quant.evaluate_crypto(symbol, start_str, end_str)
+                
+                sent_res = news_hound.analyze_sentiment(symbol, asset_type)
+                risk_res = skeptic.evaluate_risk(symbol, asset_type, q_res, sent_res)
+
+                verdict = closing_agent.evaluate_exit(
+                    symbol, asset_type, direction, qty, current_price, avg_entry_price,
+                    pnl_pct, hold_mins, q_res, sent_res, risk_res
+                )
+
+                if verdict["confidence"] >= config.CLOSING_CONFIDENCE_THRESHOLD:
+                    action = verdict["verdict"]
+                    reason = verdict["reasoning"]
+                    
+                    if action == "SELL_ALL":
+                        log.info(f"AI EXIT: Closing {symbol} entirely.")
+                        if broker.close_position(symbol):
+                            telegram.closing_agent_alert(symbol, action, verdict["confidence"], pnl_pct, reason, "Sold 100%")
+                    elif action == "SELL_PARTIAL":
+                        pct = verdict.get("sell_pct", 0.5)
+                        log.info(f"AI EXIT: Partially closing {symbol} by {pct:.0%}.")
+                        if broker.close_position_partial(symbol, pct):
+                            telegram.closing_agent_alert(symbol, action, verdict["confidence"], pnl_pct, reason, f"Sold {pct:.0%}")
+                    elif action == "ADJUST_STOP":
+                        new_trail = verdict.get("new_trail_pct", 1.5)
+                        log.info(f"AI EXIT: Adjusting trailing stop for {symbol} to {new_trail}%.")
+                        if broker.replace_trailing_stop(symbol, new_trail):
+                            telegram.closing_agent_alert(symbol, action, verdict["confidence"], pnl_pct, reason, f"New stop: {new_trail}%")
 
         # ─── Step 1: Universe Scanning ───────────────────────────────
         log.info("Step 1: Scanning trading universe...")

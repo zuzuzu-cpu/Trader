@@ -70,14 +70,26 @@ class MarketRegime:
                 return default
 
             # Calculate returns over the RS lookback period
-            lookback = min(config.RS_LOOKBACK_DAYS, len(sym_df) - 1, len(bench_df) - 1)
+            # Align by timestamp to ensure we compare exact calendar dates
+            sym_dates = sym_df.set_index("timestamp")["close"] if "timestamp" in sym_df.columns else sym_df["close"]
+            bench_dates = bench_df.set_index("timestamp")["close"] if "timestamp" in bench_df.columns else bench_df["close"]
+            
+            # Normalize index to dates to align crypto (00:00 UTC) with stocks (04:00 UTC)
+            if isinstance(sym_dates.index, pd.DatetimeIndex):
+                sym_dates.index = sym_dates.index.normalize()
+            if isinstance(bench_dates.index, pd.DatetimeIndex):
+                bench_dates.index = bench_dates.index.normalize()
+
+            # Inner join to get strictly aligned dates
+            aligned = pd.concat([sym_dates, bench_dates], axis=1, join="inner").dropna()
+            aligned.columns = ["sym", "bench"]
+            
+            lookback = min(config.RS_LOOKBACK_DAYS, len(aligned) - 1)
             if lookback < 10:
                 return default
-
-            sym_return = (float(sym_df["close"].iloc[-1]) /
-                          float(sym_df["close"].iloc[-lookback]) - 1)
-            bench_return = (float(bench_df["close"].iloc[-1]) /
-                            float(bench_df["close"].iloc[-lookback]) - 1)
+                
+            sym_return = (float(aligned["sym"].iloc[-1]) / float(aligned["sym"].iloc[-lookback]) - 1)
+            bench_return = (float(aligned["bench"].iloc[-1]) / float(aligned["bench"].iloc[-lookback]) - 1)
 
             # RS Rating: how much the symbol outperforms the benchmark
             if bench_return != 0:

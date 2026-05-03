@@ -295,36 +295,40 @@ class DataFetcher:
         # 2. Try Finnhub (Fast, generous limit)
         if config.FINNHUB_API_KEY:
             try:
-                finnhub_limiter.acquire()
-                res = requests.get(
-                    f"https://finnhub.io/api/v1/stock/metric",
-                    params={"symbol": symbol, "metric": "all", "token": config.FINNHUB_API_KEY},
-                    timeout=5
-                )
-                if res.status_code == 200:
-                    metrics = res.json().get("metric", {})
-                    if metrics:
-                        deep_data["finnhub_pe"] = metrics.get("peBasicExclExtraTTM")
-                        deep_data["finnhub_roe"] = metrics.get("roeTTM")
-                        deep_data["finnhub_debt_equity"] = metrics.get("totalDebtToEquityAnnual")
+                if finnhub_limiter.acquire(timeout=2.0):
+                    res = requests.get(
+                        f"https://finnhub.io/api/v1/stock/metric",
+                        params={"symbol": symbol, "metric": "all", "token": config.FINNHUB_API_KEY},
+                        timeout=5
+                    )
+                    if res.status_code == 200:
+                        metrics = res.json().get("metric", {})
+                        if metrics:
+                            deep_data["finnhub_pe"] = metrics.get("peBasicExclExtraTTM")
+                            deep_data["finnhub_roe"] = metrics.get("roeTTM")
+                            deep_data["finnhub_debt_equity"] = metrics.get("totalDebtToEquityAnnual")
+                else:
+                    log.warning(f"Finnhub rate limit exhausted, skipping {symbol}")
             except Exception as e:
                 log.warning(f"Finnhub fetch failed for {symbol}: {e}")
 
         # 3. Try FMP (Deep learning base, strict 250/day limit)
         if config.FMP_API_KEY and not deep_data:
             try:
-                fmp_limiter.acquire()
-                res = requests.get(
-                    f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{symbol}",
-                    params={"apikey": config.FMP_API_KEY},
-                    timeout=5
-                )
-                if res.status_code == 200 and res.json():
-                    metrics = res.json()[0]
-                    deep_data["fmp_pe"] = metrics.get("peRatioTTM")
-                    deep_data["fmp_roe"] = metrics.get("roeTTM")
-                    deep_data["fmp_debt_equity"] = metrics.get("debtToEquityTTM")
-                    deep_data["fmp_pb"] = metrics.get("pbRatioTTM")
+                if fmp_limiter.acquire(timeout=2.0):
+                    res = requests.get(
+                        f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{symbol}",
+                        params={"apikey": config.FMP_API_KEY},
+                        timeout=5
+                    )
+                    if res.status_code == 200 and res.json():
+                        metrics = res.json()[0]
+                        deep_data["fmp_pe"] = metrics.get("peRatioTTM")
+                        deep_data["fmp_roe"] = metrics.get("roeTTM")
+                        deep_data["fmp_debt_equity"] = metrics.get("debtToEquityTTM")
+                        deep_data["fmp_pb"] = metrics.get("pbRatioTTM")
+                else:
+                    log.warning(f"FMP rate limit exhausted, skipping {symbol}")
             except Exception as e:
                 log.warning(f"FMP fetch failed for {symbol}: {e}")
 
@@ -412,9 +416,9 @@ class DataFetcher:
         # Daily (already the default)
         result["1d"] = fetch_fn(symbol, start_date, end_date, TimeFrame.Day)
 
-        # Hourly (last 5 days only to keep data manageable)
+        # Hourly (last 14 days to ensure at least 21 trading hours for EMA calculations)
         from datetime import datetime, timedelta
-        hourly_start = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
+        hourly_start = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
         result["1h"] = fetch_fn(symbol, hourly_start, end_date, TimeFrame.Hour)
 
         # Weekly

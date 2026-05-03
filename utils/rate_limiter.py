@@ -34,14 +34,26 @@ class RateLimiter:
         self.tokens = min(self.max_calls, self.tokens + new_tokens)
         self.last_refill = now
 
-    def acquire(self):
-        """Block until a token is available, then consume it."""
+    def acquire(self, blocking: bool = True, timeout: float = None) -> bool:
+        """
+        Block until a token is available, then consume it.
+        If blocking=False, returns False immediately if no tokens.
+        If timeout is set, returns False after waiting `timeout` seconds.
+        """
+        start_time = time.monotonic()
         while True:
             with self._lock:
                 self._refill()
                 if self.tokens >= 1:
                     self.tokens -= 1
-                    return
+                    return True
+                    
+            if not blocking:
+                return False
+                
+            if timeout is not None and (time.monotonic() - start_time) >= timeout:
+                return False
+
             # Wait a small interval before retrying
             time.sleep(0.1)
 

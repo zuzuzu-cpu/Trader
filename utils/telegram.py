@@ -252,3 +252,14 @@ class TelegramAlert:
     def shutdown(self):
         """Alert when the bot shuts down."""
         self._send("🔴 <b>SENTINEL AUTOTRADER</b> — Shutting down gracefully.")
+
+    def closing_agent_alert(self, symbol: str, verdict: str, confidence: float, pnl_pct: float, reasoning: str, action_details: str = ""):
+        """Alert when the Closing Agent modifies or closes a position."""
+        emoji = "🔒" if verdict == "SELL_ALL" else "✂️" if verdict == "SELL_PARTIAL" else "🛡️"
+        self._send(
+            f"{emoji} <b>AI EARLY EXIT — {symbol}</b>\n"
+            f"Verdict: <b>{verdict}</b> (Conf: {confidence:.1f}%)\n"
+            f"Current P/L: <b>{pnl_pct:+.2f}%</b>\n"
+            f"Action: {action_details}\n\n"
+            f"🧠 <b>Reasoning:</b>\n<i>{reasoning}</i>"
+        )
