@@ -357,8 +357,11 @@ class AlpacaBroker:
                             f"@ {config.REMAINDER_TRAIL_PCT}% trail"
                         )
 
-                if (tp_order_id or take_profit_qty == 0) and \
-                   (result.get("stop_order_id") or remainder_qty == 0):
+                # A trade is 'complete' if we set the orders or if we intentionally skipped them (crypto)
+                tp_ok = tp_order_id or take_profit_qty == 0
+                stop_ok = stop_order_id or remainder_qty == 0 or is_crypto
+                
+                if tp_ok and stop_ok:
                     result["status"] = "complete"
                     log.info(
                         f"Trade complete (partial profit): {direction.upper()} {symbol} "
@@ -371,13 +374,20 @@ class AlpacaBroker:
                 stop_order_id = self.place_trailing_stop(
                     symbol, total_qty, trailing_stop_pct, side=stop_side
                 )
-                result["stop_order_id"] = stop_order_id
                 if stop_order_id:
                     result["status"] = "complete"
                     log.info(
                         f"Trade complete: {direction.upper()} {symbol} filled @ "
                         f"${fill_info['filled_avg_price']:.2f} "
                         f"qty={total_qty:.4f}, trailing stop @ {trailing_stop_pct}%"
+                    )
+                elif is_crypto:
+                    # For crypto, we skip trailing stops but the trade is still 'complete'
+                    result["status"] = "complete"
+                    log.info(
+                        f"Trade complete (Crypto): {direction.upper()} {symbol} filled @ "
+                        f"${fill_info['filled_avg_price']:.2f} "
+                        f"qty={total_qty:.4f} (No trailing stop)"
                     )
 
         return result
