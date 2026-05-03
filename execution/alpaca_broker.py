@@ -162,11 +162,11 @@ class AlpacaBroker:
     def place_trailing_stop(self, symbol: str, qty: float,
                             trail_percent: float,
                             side: str = "sell") -> Optional[str]:
-        """
-        Places a trailing stop order to protect a position.
-        side='sell' for long protection, side='buy' for short protection.
-        Returns the order ID or None on failure.
-        """
+        """Places a trailing stop sell order. (Stocks only)"""
+        if "/" in symbol or any(c in symbol for c in ["USD", "BTC", "ETH"]):
+            log.warning(f"Trailing stops are not supported for Crypto ({symbol}). Skipping.")
+            return None
+
         alpaca_limiter.acquire()
         order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
         try:
@@ -200,13 +200,18 @@ class AlpacaBroker:
         """
         alpaca_limiter.acquire()
         order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
+        
+        # Determine precision: Crypto needs much higher precision than stocks
+        is_crypto = "/" in symbol or any(c in symbol for c in ["USD", "BTC", "ETH"])
+        precision = 9 if is_crypto else 2
+        
         try:
             limit_request = LimitOrderRequest(
                 symbol=self._format_symbol(symbol),
                 qty=qty,
                 side=order_side,
                 time_in_force=TimeInForce.GTC,
-                limit_price=round(limit_price, 2),
+                limit_price=round(limit_price, precision),
             )
             order = self.trading_client.submit_order(limit_request)
             log.info(
