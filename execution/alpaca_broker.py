@@ -428,7 +428,7 @@ class AlpacaBroker:
             alpaca_limiter.acquire()
             try:
                 order = self.trading_client.get_order_by_id(order_id)
-                if order.status.value in ("filled", "partially_filled"):
+                if order.status.value == "filled":
                     return {
                         "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else 0,
                         "filled_qty": float(order.filled_qty) if order.filled_qty else 0,

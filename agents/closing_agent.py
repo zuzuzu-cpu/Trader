@@ -150,4 +150,18 @@ Respond with ONLY valid JSON:
             }
         except Exception as e:
             log.warning(f"Failed to parse closing agent JSON: {e}")
-            return {"verdict": "HOLD", "confidence": 0, "sell_pct": 0, "new_trail_pct": 0, "reasoning": "JSON parse error"}
+            
+            # Fallback regex parsing if AI generated broken JSON
+            v_match = re.search(r'"verdict"\s*:\s*"([A-Z_]+)"', raw)
+            c_match = re.search(r'"confidence"\s*:\s*([0-9.]+)', raw)
+            
+            verdict = v_match.group(1) if v_match else "HOLD"
+            conf = float(c_match.group(1)) if c_match else 0.0
+            
+            return {
+                "verdict": verdict,
+                "confidence": conf,
+                "sell_pct": 0.5,
+                "new_trail_pct": 1.5,
+                "reasoning": "Parsed via fallback regex due to invalid JSON formatting"
+            }
