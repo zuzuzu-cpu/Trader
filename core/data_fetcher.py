@@ -14,6 +14,7 @@ Handles all external data ingestion with:
 import os
 import time
 import json
+import sqlite3
 import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,7 +34,10 @@ from alpaca.data.timeframe import TimeFrame
 
 import config
 from utils.logger import get_logger
-from utils.rate_limiter import alpaca_limiter, newsapi_limiter, retry_on_rate_limit
+from utils.rate_limiter import (
+    alpaca_limiter, newsapi_limiter, retry_on_rate_limit,
+    finnhub_limiter, fmp_limiter, sec_limiter
+)
 
 log = get_logger("sentinel.data_fetcher")
 
@@ -53,6 +57,20 @@ class DataFetcher:
         self._cache_dir = config.DATA_DIR / "cache"
         self._cache_dir.mkdir(exist_ok=True)
         self._fundamentals_cache = {}  # In-memory cache for fundamentals
+
+        # V5: SQLite Deep Fundamentals Cache
+        self._db_path = config.DATA_DIR / "fundamentals.db"
+        self._init_db()
+
+    def _init_db(self):
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS deep_fundamentals (
+                    symbol TEXT PRIMARY KEY,
+                    data TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
 
     # ─── Alpaca Stock Bars ───────────────────────────────────────────────
 
@@ -149,6 +167,9 @@ class DataFetcher:
         Fetches comprehensive fundamental data from Yahoo Finance.
         Implements in-memory caching (fundamentals don't change intraday).
         """
+        if symbol in config.ETF_SYMBOLS or symbol in config.CRYPTO_SYMBOLS:
+            return {}  # Skip fundamentals for ETFs and Crypto to avoid 404s
+
         if symbol in self._fundamentals_cache:
             return self._fundamentals_cache[symbol]
 
@@ -241,6 +262,80 @@ class DataFetcher:
         except Exception as e:
             log.warning(f"Failed to fetch fundamentals for {symbol}: {e}")
             return None
+
+    # ─── V5: Deep Fundamentals (FMP / Finnhub / SEC) ─────────────────────
+
+    def get_deep_fundamentals(self, symbol: str) -> dict:
+        """
+        Fetches deep fundamentals for high-conviction candidates.
+        Tries SQLite Cache -> Finnhub -> FMP -> SEC EDGAR.
+        """
+        # 1. Check SQLite Cache
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT data, updated_at FROM deep_fundamentals WHERE symbol=?",
+                    (symbol,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    updated_at = datetime.fromisoformat(row[1])
+                    if datetime.now() - updated_at < timedelta(days=config.FUNDAMENTALS_CACHE_DAYS):
+                        return json.loads(row[0])
+        except Exception as e:
+            log.error(f"SQLite cache error for {symbol}: {e}")
+
+        deep_data = {}
+
+        # 2. Try Finnhub (Fast, generous limit)
+        if config.FINNHUB_API_KEY:
+            try:
+                finnhub_limiter.acquire()
+                res = requests.get(
+                    f"https://finnhub.io/api/v1/stock/metric",
+                    params={"symbol": symbol, "metric": "all", "token": config.FINNHUB_API_KEY},
+                    timeout=5
+                )
+                if res.status_code == 200:
+                    metrics = res.json().get("metric", {})
+                    if metrics:
+                        deep_data["finnhub_pe"] = metrics.get("peBasicExclExtraTTM")
+                        deep_data["finnhub_roe"] = metrics.get("roeTTM")
+                        deep_data["finnhub_debt_equity"] = metrics.get("totalDebtToEquityAnnual")
+            except Exception as e:
+                log.warning(f"Finnhub fetch failed for {symbol}: {e}")
+
+        # 3. Try FMP (Deep learning base, strict 250/day limit)
+        if config.FMP_API_KEY and not deep_data:
+            try:
+                fmp_limiter.acquire()
+                res = requests.get(
+                    f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{symbol}",
+                    params={"apikey": config.FMP_API_KEY},
+                    timeout=5
+                )
+                if res.status_code == 200 and res.json():
+                    metrics = res.json()[0]
+                    deep_data["fmp_pe"] = metrics.get("peRatioTTM")
+                    deep_data["fmp_roe"] = metrics.get("roeTTM")
+                    deep_data["fmp_debt_equity"] = metrics.get("debtToEquityTTM")
+                    deep_data["fmp_pb"] = metrics.get("pbRatioTTM")
+            except Exception as e:
+                log.warning(f"FMP fetch failed for {symbol}: {e}")
+
+        # 4. Save to Cache
+        if deep_data:
+            try:
+                with sqlite3.connect(self._db_path) as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO deep_fundamentals (symbol, data, updated_at) VALUES (?, ?, ?)",
+                        (symbol, json.dumps(deep_data), datetime.now().isoformat())
+                    )
+            except Exception as e:
+                log.error(f"SQLite save error for {symbol}: {e}")
+
+        return deep_data
 
     # ─── News Fetching ───────────────────────────────────────────────────
 

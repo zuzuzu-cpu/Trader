@@ -60,6 +60,9 @@ class RateLimiter:
 alpaca_limiter = RateLimiter("alpaca", max_calls=180, period_seconds=60)
 deepseek_limiter = RateLimiter("deepseek", max_calls=30, period_seconds=60)
 newsapi_limiter = RateLimiter("newsapi", max_calls=5, period_seconds=60)  # Very conservative
+finnhub_limiter = RateLimiter("finnhub", max_calls=55, period_seconds=60) # 60/min limit
+fmp_limiter = RateLimiter("fmp", max_calls=240, period_seconds=86400) # 250/day limit
+sec_limiter = RateLimiter("sec", max_calls=10, period_seconds=1) # 10/sec limit
 
 
 def retry_on_rate_limit(func, max_retries=3, base_delay=2.0):

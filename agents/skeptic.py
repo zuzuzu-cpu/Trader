@@ -198,6 +198,10 @@ class Skeptic:
                             spread_pct: float, existing_flags: list) -> Optional[dict]:
         """Calls DeepSeek for nuanced risk assessment."""
         deepseek_limiter.acquire()
+        
+        deep_fund = {}
+        if asset_type != "crypto":
+            deep_fund = self.fetcher.get_deep_fundamentals(symbol)
 
         signals = quant_result.get("signals", {})
 
@@ -223,6 +227,9 @@ SENTIMENT:
 - Confidence: {sentiment_result.get('confidence', 0)}
 - Events: {sentiment_result.get('events', [])}
 - Summary: {sentiment_result.get('summary', 'N/A')}
+
+DEEP FUNDAMENTALS (Finnhub/FMP):
+{json.dumps(deep_fund, indent=2) if deep_fund else 'No data'}
 
 MARKET MICROSTRUCTURE:
 - Bid/Ask Spread: {spread_pct:.2f}%
