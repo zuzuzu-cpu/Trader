@@ -116,8 +116,9 @@ class DataFetcher:
 
         alpaca_limiter.acquire()
         try:
+            formatted_symbol = f"{symbol[:-3]}/{symbol[-3:]}" if "USD" in symbol and "/" not in symbol else symbol
             request_params = CryptoBarsRequest(
-                symbol_or_symbols=symbol,
+                symbol_or_symbols=formatted_symbol,
                 timeframe=timeframe,
                 start=start_date,
                 end=end_date,
@@ -524,10 +525,11 @@ class DataFetcher:
         batch_size = 50 # Crypto requests are heavier
         for i in range(0, len(symbols), batch_size):
             batch = symbols[i:i + batch_size]
+            formatted_batch = [f"{s[:-3]}/{s[-3:]}" if "USD" in s and "/" not in s else s for s in batch]
             alpaca_limiter.acquire()
             try:
                 req = CryptoBarsRequest(
-                    symbol_or_symbols=batch,
+                    symbol_or_symbols=formatted_batch,
                     timeframe=TimeFrame.Day,
                     start=start_date,
                     end=end_date,
@@ -535,9 +537,9 @@ class DataFetcher:
                 bars = self.crypto_client.get_crypto_bars(req)
                 df_all = bars.df
                 if not df_all.empty:
-                    for symbol in batch:
-                        if symbol in df_all.index.get_level_values(0):
-                            df_sym = df_all.xs(symbol).reset_index()
+                    for symbol, formatted_sym in zip(batch, formatted_batch):
+                        if formatted_sym in df_all.index.get_level_values(0):
+                            df_sym = df_all.xs(formatted_sym).reset_index()
                             df_sym.columns = [c.lower() for c in df_sym.columns]
                             cache_key = f"crypto_{symbol}_{start_date}_{end_date}_{TimeFrame.Day}"
                             self._write_cache(cache_key, df_sym)

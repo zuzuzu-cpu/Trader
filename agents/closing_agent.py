@@ -141,13 +141,13 @@ Respond with ONLY valid JSON:
         try:
             data = json.loads(raw)
             return {
-                "verdict": data.get("verdict", "HOLD"),
-                "confidence": float(data.get("confidence", 0)),
-                "sell_pct": float(data.get("sell_pct", 0.5)),
-                "new_trail_pct": float(data.get("new_trail_pct", 1.5)),
-                "reasoning": str(data.get("reasoning", ""))[:300],
+                "verdict": str(data.get("verdict") or "HOLD"),
+                "confidence": float(data.get("confidence") or 0.0),
+                "sell_pct": float(data.get("sell_pct") or 0.5),
+                "new_trail_pct": float(data.get("new_trail_pct") or 1.5),
+                "reasoning": str(data.get("reasoning") or "")[:300],
                 "deepseek_reasoning": "",  # Reasoner CoT text could be extracted if needed
             }
-        except (json.JSONDecodeError, ValueError) as e:
+        except Exception as e:
             log.warning(f"Failed to parse closing agent JSON: {e}")
             return {"verdict": "HOLD", "confidence": 0, "sell_pct": 0, "new_trail_pct": 0, "reasoning": "JSON parse error"}
