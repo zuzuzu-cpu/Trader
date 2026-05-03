@@ -272,6 +272,16 @@ class AlpacaBroker:
                 result["status"] = "market_closed"
                 return result
 
+        # ─── Step 0.5: Clear existing orders to avoid 'Wash Trade' errors ─
+        try:
+            # Cancel any open orders for this symbol before starting a new trade
+            open_orders = self.trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[self._format_symbol(symbol)]))
+            for o in open_orders:
+                log.info(f"Clearing old order {o.id} for {symbol} to prevent wash trade error.")
+                self.trading_client.cancel_order_by_id(o.id)
+        except Exception as e:
+            log.debug(f"No existing orders to clear for {symbol}: {e}")
+            
         # ─── Step 1: Place order ─────────────────────────────────────
         if direction == "long":
             order_id = self.place_buy_order(symbol, notional)
