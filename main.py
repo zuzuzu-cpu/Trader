@@ -114,7 +114,7 @@ def _track_position_outcomes(broker, journal):
 
                 # Estimate: if we can't get exact exit, use a placeholder
                 # The real P&L will be reflected in equity changes
-                from datetime import datetime, timezone
+
                 entry_time = datetime.fromisoformat(trade["timestamp"].replace("Z", "+00:00")) \
                     if trade["timestamp"] else datetime.now(timezone.utc)
                 hold_minutes = int((datetime.now(timezone.utc) - entry_time).total_seconds() / 60)
@@ -218,7 +218,7 @@ def run_cycle():
                         conn.row_factory = sqlite3.Row
                         last_trade = conn.execute("SELECT timestamp FROM trades WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1", (symbol,)).fetchone()
                         if last_trade and last_trade["timestamp"]:
-                            from datetime import datetime, timezone
+
                             entry_time = datetime.fromisoformat(last_trade["timestamp"].replace("Z", "+00:00"))
                             hold_mins = int((datetime.now(timezone.utc) - entry_time).total_seconds() / 60)
                 except Exception as e:
