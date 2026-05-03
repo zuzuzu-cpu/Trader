@@ -121,6 +121,19 @@ class UniverseScanner:
             if not any(sc in s for sc in stablecoins)
         ]
 
+        # 3. Filter for Blue Chip / Verified Crypto only (Avoids Meme Coin errors)
+        verified_crypto = [
+            "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "LINK/USD",
+            "DOGE/USD", "ADA/USD", "DOT/USD", "MATIC/USD", "UNI/USD",
+            "SHIB/USD", "LTC/USD", "BCH/USD", "AAVE/USD", "ALGO/USD",
+            "BAT/USD", "MKR/USD", "SUSHI/USD", "NEAR/USD", "XLM/USD"
+        ]
+        
+        crypto_symbols = [
+            s for s in crypto_symbols 
+            if s in verified_crypto
+        ]
+
         universe = {
             "stocks": list(stocks)[:max_stocks],
             "etfs": list(etfs),
