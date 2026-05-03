@@ -196,6 +196,14 @@ def run_cycle():
         log.info("Step 1: Scanning trading universe...")
         live_state.update(step="Step 1: Universe Scanning", details="Fetching list of tradable assets...", progress=5)
         universe = scanner.get_full_universe(max_stocks=config.MAX_UNIVERSE_SIZE)
+        
+        # If the stock market is closed, do not bother scanning 7,000 stocks/ETFs.
+        # Only trade crypto. Alpaca's API tells us the exact NY market status.
+        if config.SKIP_CLOSED_MARKET and not broker.is_market_open():
+            log.info("Market is currently CLOSED. Skipping Stock and ETF scans. Only scanning Crypto.")
+            universe["stocks"] = []
+            universe["etfs"] = []
+            
         stats["universe"] = sum(len(v) for v in universe.values())
 
         # ─── Step 1.5: Batch Prefetching (Rate Limit Focus) ──────────
