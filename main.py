@@ -42,6 +42,7 @@ from execution.alpaca_broker import AlpacaBroker
 from utils.logger import get_logger, TradeJournal
 from utils.async_executor import AsyncExecutor
 from utils.telegram import TelegramAlert
+from utils.live_state import live_state
 
 log = get_logger("sentinel")
 telegram = TelegramAlert()
@@ -193,6 +194,7 @@ def run_cycle():
 
         # ─── Step 1: Universe Scanning ───────────────────────────────
         log.info("Step 1: Scanning trading universe...")
+        live_state.update(step="Step 1: Universe Scanning", details="Fetching list of tradable assets...", progress=5)
         universe = scanner.get_full_universe(max_stocks=config.MAX_UNIVERSE_SIZE)
         stats["universe"] = sum(len(v) for v in universe.values())
 
@@ -206,6 +208,7 @@ def run_cycle():
 
         if not _shutdown:
             log.info("Warming up data cache for full universe...")
+            live_state.update(details=f"Prefetching cache for {stats['universe']} assets...", progress=10)
             fetcher.prefetch_stock_bars(universe["stocks"], start_str, end_str)
             fetcher.prefetch_crypto_bars(universe["crypto"], start_str, end_str)
 
@@ -236,6 +239,7 @@ def run_cycle():
 
         # ─── Step 2: Quantitative Filtering (ASYNC) ──────────────────
         log.info(f"Step 2: Running parallel quantitative screening ({config.MAX_WORKERS} workers)...")
+        live_state.update(step="Step 2: Quant Screening", details=f"Calculating 15+ indicators across {stats['universe']} assets...", progress=20)
 
         candidates = []
 
@@ -299,6 +303,11 @@ def run_cycle():
 
             log.info(f"\n{'─'*40}")
             log.info(f"Analyzing: {symbol} (Score: {q_result['score']:.0f})")
+            
+            # Calculate dynamic progress (from 30% to 90%)
+            idx = candidates.index(q_result)
+            prog = 30 + int(60 * (idx / max_ai_candidates))
+            live_state.update(step="Step 3: AI Swarm", details=f"Agents analyzing {symbol}...", progress=prog, active_symbol=symbol)
 
             try:
                 # ─── Agent 1: News Hound ─────────────────────────────
@@ -321,6 +330,7 @@ def run_cycle():
 
                 # ─── Agent 2: The Skeptic ────────────────────────────
                 log.info(f"  Agent 2 (Skeptic): Evaluating risk...")
+                live_state.update(details=f"The Skeptic is evaluating risk for {symbol}...")
                 risk = skeptic.evaluate_risk(symbol, asset_type, q_result, sentiment)
                 log.info(
                     f"  Risk: grade={risk['grade']}, "
@@ -371,6 +381,8 @@ def run_cycle():
                 if verdict["should_trade"]:
                     direction = verdict.get("direction", "long")
                     side_label = "BUY" if direction == "long" else "SHORT"
+                    
+                    live_state.update(step="Step 5: Execution", details=f"Placing {side_label} order for {symbol}...", progress=95)
 
                     log.info(
                         f"  ★ EXECUTING {side_label}: {symbol} | "
@@ -477,6 +489,7 @@ def run_cycle():
         f"Errors: {stats['errors']}"
     )
     log.info(f"{'='*60}\n")
+    live_state.update(step="Sleeping", details="Cycle complete. Waiting for next schedule...", progress=100, active_symbol=None)
 
 
 # ─── Scheduler ───────────────────────────────────────────────────────────────

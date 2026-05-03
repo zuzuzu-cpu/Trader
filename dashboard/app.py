@@ -18,6 +18,36 @@ def get_db_connection():
 def index():
     return render_template("index.html")
 
+@app.route("/api/live_status")
+def api_live_status():
+    """Returns the live status of the bot from the JSON state file."""
+    import json
+    status_file = os.path.join(os.path.dirname(DB_PATH), "live_status.json")
+    
+    try:
+        if os.path.exists(status_file):
+            # Check if file is stale (> 10 minutes)
+            if os.path.getmtime(status_file) < (datetime.utcnow().timestamp() - 600):
+                return jsonify({
+                    "step": "Sleeping",
+                    "details": "Bot is currently idle or sleeping between cycles.",
+                    "progress": 100,
+                    "active_symbol": None,
+                    "stale": True
+                })
+                
+            with open(status_file, "r") as f:
+                return jsonify(json.load(f))
+    except Exception as e:
+        pass
+
+    return jsonify({
+        "step": "Unknown",
+        "details": "Waiting for bot to start or post status...",
+        "progress": 0,
+        "active_symbol": None
+    })
+
 @app.route("/api/summary")
 def api_summary():
     """Returns top-level portfolio metrics."""
