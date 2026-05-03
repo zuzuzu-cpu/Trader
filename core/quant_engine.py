@@ -79,6 +79,13 @@ class QuantEngine:
         # 3. Score technicals (0-60)
         tech_score, tech_reasons = self._score_technicals(signals)
 
+        # GATING: If technicals are garbage, don't waste API budget on fundamentals/RS/Earnings
+        # This prevents hitting yfinance/Alpaca rate limits on the 7,000+ asset scan
+        if tech_score < 25:
+            result["score"] = tech_score
+            result["reason"] = f"Poor technicals ({tech_score:.1f}). Gated to save API budget."
+            return result
+
         # 4. Fetch and score fundamentals (0-40)
         fundamentals = self.fetcher.get_fundamentals(symbol)
         fund_score, fund_reasons = self._score_fundamentals(fundamentals)
