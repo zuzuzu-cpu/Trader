@@ -49,10 +49,108 @@ class TelegramAlert:
 
     # ─── Alert Types ─────────────────────────────────────────────────
 
+    def trade_card(self, symbol: str, side: str, notional: float,
+                   confidence: float, fill_price: float,
+                   trailing_stop_pct: float, verdict: dict,
+                   q_result: dict = None, sentiment: dict = None,
+                   insider: dict = None, social: dict = None,
+                   options: dict = None):
+        """
+        Rich trade explanation card — V5 format.
+        Shows all signals, AI reasoning, and exit plan in one structured message.
+        """
+        if not config.TRADE_CARDS_ENABLED:
+            # Fallback to simple alert
+            return self.trade_executed(symbol, side, notional, confidence,
+                                       fill_price, trailing_stop_pct)
+
+        emoji = "🟢" if side == "BUY" else "🔴"
+        direction_label = "LONG ↗" if side == "BUY" else "SHORT ↘"
+
+        # Build signal blocks
+        q_block = ""
+        if q_result:
+            signals = q_result.get("signals", {})
+            rsi = signals.get("rsi", "N/A")
+            macd = "✅" if signals.get("macd_bullish") else "❌"
+            mtf = "✅" if q_result.get("mtf_confirmed") else "❌"
+            rs = q_result.get("rs_rating", "N/A")
+            rs_fmt = f"{rs:.2f}" if isinstance(rs, float) else str(rs)
+            q_block = (
+                f"\n📊 <b>Quant Score: {q_result.get('score', 0):.0f}/100</b>\n"
+                f"RSI: {rsi:.1f} | MACD: {macd} | MTF: {mtf} | RS: {rs_fmt}"
+            )
+
+        sent_block = ""
+        if sentiment:
+            sent_score = sentiment.get("score", 0)
+            sent_conf = sentiment.get("confidence", 0)
+            sent_sum = sentiment.get("summary", "")[:100]
+            s_emoji = "📈" if sent_score > 0 else ("📉" if sent_score < 0 else "➡️")
+            sent_block = (
+                f"\n{s_emoji} <b>Sentiment: {sent_score:+d}/10</b> "
+                f"(conf: {sent_conf:.0%})\n"
+                f"<i>{sent_sum}</i>"
+            )
+
+        insider_block = ""
+        if insider and insider.get("score", 0) != 0:
+            insider_block = (
+                f"\n🏢 <b>Insider:</b> {insider.get('summary', '')} "
+                f"(score: {insider.get('score', 0):+d})"
+            )
+
+        social_block = ""
+        if social and social.get("mention_count", 0) > 0:
+            vel = social.get("velocity", "LOW")
+            mentions = social.get("mention_count", 0)
+            social_block = (
+                f"\n📱 <b>Social:</b> {mentions} Reddit mentions "
+                f"[{vel}] (score: {social.get('score', 0):+d})"
+            )
+
+        options_block = ""
+        if options and options.get("summary"):
+            o_score = options.get("score", 0)
+            o_emoji = "⚡" if (options.get("unusual_calls") or options.get("unusual_puts")) else "📋"
+            options_block = (
+                f"\n{o_emoji} <b>Options:</b> {options.get('summary', '')} "
+                f"(score: {o_score:+d})"
+            )
+
+        # Exit plan
+        tp_price = fill_price * (1 + (verdict.get("take_profit_pct", 5) / 100))
+        stop_price = fill_price * (1 - trailing_stop_pct / 100)
+        exit_block = (
+            f"\n🎯 <b>Exit Plan</b>\n"
+            f"Take Profit 50%: ${tp_price:,.2f} (+{verdict.get('take_profit_pct', 5):.0f}%)\n"
+            f"Trailing Stop: ${stop_price:,.2f} (-{trailing_stop_pct:.1f}%)"
+        )
+
+        # AI reasoning
+        reasoning = verdict.get("reasoning", "")[:250]
+        ai_block = f"\n🧠 <b>AI:</b> <i>{reasoning}</i>" if reasoning else ""
+
+        message = (
+            f"{emoji} <b>TRADE EXECUTED — {symbol}</b>\n"
+            f"{'─' * 28}\n"
+            f"Direction: <b>{direction_label}</b>\n"
+            f"Amount: <b>${notional:,.2f}</b> @ ${fill_price:,.4f}\n"
+            f"Confidence: <b>{confidence:.1f}%</b>"
+            f"{q_block}"
+            f"{sent_block}"
+            f"{insider_block}"
+            f"{social_block}"
+            f"{options_block}"
+            f"{ai_block}"
+            f"{exit_block}"
+        )
+        self._send(message)
+
     def trade_executed(self, symbol: str, side: str, notional: float,
                        confidence: float, fill_price: float = 0,
                        trailing_stop_pct: float = 0):
-        """Alert when a trade is executed."""
+        """Simple trade alert (fallback when TRADE_CARDS_ENABLED=false)."""
         emoji = "🟢" if side == "BUY" else "🔴"
         self._send(
             f"{emoji} <b>TRADE EXECUTED</b>\n\n"
@@ -62,6 +160,29 @@ class TelegramAlert:
             f"Fill Price: ${fill_price:,.2f}\n"
             f"Confidence: {confidence:.1f}%\n"
             f"Trailing Stop: {trailing_stop_pct:.1f}%"
+        )
+
+    def skip_card(self, symbol: str, confidence: float, verdict: dict,
+                  q_result: dict = None):
+        """
+        Sends a near-miss skip card for candidates that were close but rejected.
+        Only fires for candidates above SKIP_CARD_MIN_CONFIDENCE.
+        """
+        if not config.TRADE_CARDS_ENABLED:
+            return
+        if confidence < config.SKIP_CARD_MIN_CONFIDENCE:
+            return
+
+        quant_score = q_result.get("score", 0) if q_result else 0
+        reasoning = verdict.get("reasoning", "")[:200]
+
+        self._send(
+            f"⏭️ <b>NEAR-MISS SKIP — {symbol}</b>\n"
+            f"{'─' * 28}\n"
+            f"Confidence: {confidence:.1f}% (below threshold)\n"
+            f"Quant Score: {quant_score:.0f}/100\n\n"
+            f"🧠 <b>Bear Case:</b>\n"
+            f"<i>{reasoning}</i>"
         )
 
     def trade_skipped(self, symbol: str, reason: str):

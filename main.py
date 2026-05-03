@@ -30,9 +30,14 @@ import config
 from core.data_fetcher import DataFetcher
 from core.universe_scanner import UniverseScanner
 from core.quant_engine import QuantEngine
+from core.live_stream import LiveStreamManager
+from core.premarket_scanner import PreMarketScanner
 from agents.news_hound import NewsHound
 from agents.skeptic import Skeptic
 from agents.portfolio_mgr import PortfolioManager
+from agents.insider_tracker import InsiderTracker
+from agents.social_sentinel import SocialSentinel
+from agents.options_flow import OptionsFlow
 from execution.alpaca_broker import AlpacaBroker
 from utils.logger import get_logger, TradeJournal
 from utils.async_executor import AsyncExecutor
@@ -40,6 +45,9 @@ from utils.telegram import TelegramAlert
 
 log = get_logger("sentinel")
 telegram = TelegramAlert()
+
+# ─── V5: Global live stream manager (singleton, runs across cycles) ──────────
+live_stream = LiveStreamManager()
 
 # ─── Graceful Shutdown ───────────────────────────────────────────────────────
 _shutdown = False
@@ -150,6 +158,11 @@ def run_cycle():
     journal = TradeJournal()
     portfolio_mgr = PortfolioManager(journal=journal)
     async_exec = AsyncExecutor()
+    # V5 agents
+    insider_tracker = InsiderTracker()
+    social_sentinel = SocialSentinel()
+    options_flow = OptionsFlow()
+    premarket_scanner = PreMarketScanner(fetcher=fetcher, broker=broker)
 
     journal.start_cycle(cycle_id)
     stats = {"universe": 0, "candidates": 0, "trades": 0, "skipped": 0, "errors": 0}
@@ -195,6 +208,24 @@ def run_cycle():
             log.info("Warming up data cache for full universe...")
             fetcher.prefetch_stock_bars(universe["stocks"], start_str, end_str)
             fetcher.prefetch_crypto_bars(universe["crypto"], start_str, end_str)
+
+        # ─── V5: Start WebSocket Live Stream (first cycle only) ──────
+        if live_stream.cache_size == 0 and not _shutdown:
+            log.info("V5: Starting WebSocket live stream...")
+            live_stream.start(
+                stock_symbols=universe["stocks"][:500],
+                crypto_symbols=universe["crypto"],
+            )
+
+        # ─── V5: Pre-Market Priority Queue ───────────────────────────
+        priority_symbols = []
+        if PreMarketScanner.is_premarket() and not _shutdown:
+            log.info("V5: Pre-market window — scanning for gap movers...")
+            pm_movers = premarket_scanner.scan_premarket_movers(universe["stocks"][:200])
+            premarket_scanner.enqueue(pm_movers)
+        priority_symbols = premarket_scanner.get_priority_queue()
+        if priority_symbols:
+            log.info(f"V5: {len(priority_symbols)} pre-market priority candidates")
 
         # ─── Step 2: Quantitative Filtering (ASYNC) ──────────────────
         log.info(f"Step 2: Running parallel quantitative screening ({config.MAX_WORKERS} workers)...")
@@ -266,6 +297,15 @@ def run_cycle():
                 # ─── Agent 1: News Hound ─────────────────────────────
                 log.info(f"  Agent 1 (News Hound): Analyzing sentiment...")
                 sentiment = news_hound.analyze_sentiment(symbol, asset_type)
+
+                # V5: Blend social sentiment into news score
+                social = {}
+                if not _shutdown:
+                    social = social_sentinel.get_social_score(symbol)
+                    if social["score"] != 0:
+                        sentiment["score"] = max(-10, min(10, sentiment["score"] + social["score"]))
+                        sentiment["summary"] += f" | Reddit: {social.get('summary', '')[:60]}"
+
                 log.info(
                     f"  Sentiment: score={sentiment['score']}, "
                     f"confidence={sentiment['confidence']:.2f}, "
@@ -281,6 +321,22 @@ def run_cycle():
                     f"flags={risk['flags']}"
                 )
 
+                # ─── V5: Insider Tracker (SEC Form 4) ────────────────
+                insider = {}
+                if asset_type != "crypto" and not _shutdown:
+                    log.info(f"  V5 (Insider Tracker): Checking SEC Form 4...")
+                    insider = insider_tracker.get_insider_score(symbol)
+                    if insider.get("score", 0) != 0:
+                        log.info(f"  Insider: {insider.get('summary', '')} (score={insider.get('score', 0):+d})")
+
+                # ─── V5: Options Flow ────────────────────────────────
+                options = {}
+                if asset_type != "crypto" and not _shutdown:
+                    log.info(f"  V5 (Options Flow): Analyzing put/call ratio...")
+                    options = options_flow.get_options_score(symbol)
+                    if options.get("score", 0) != 0:
+                        log.info(f"  Options: {options.get('summary', '')} (score={options.get('score', 0):+d})")
+
                 # ─── Agent 3: Portfolio Manager ──────────────────────
                 log.info(f"  Agent 3 (Portfolio Mgr): Making final decision...")
                 # Refresh account state
@@ -289,7 +345,9 @@ def run_cycle():
 
                 verdict = portfolio_mgr.decide(
                     symbol, asset_type, q_result, sentiment, risk,
-                    equity, peak_equity
+                    equity, peak_equity,
+                    insider_result=insider,
+                    options_result=options,
                 )
 
                 # ─── Log the decision ────────────────────────────────
@@ -331,10 +389,13 @@ def run_cycle():
                             risk["grade"], verdict["confidence"],
                             verdict["reasoning"]
                         )
-                        telegram.trade_executed(
+                        # V5: Rich trade explanation card
+                        telegram.trade_card(
                             symbol, side_label, verdict["notional"],
                             verdict["confidence"], exec_result.get("fill_price", 0),
-                            verdict["trailing_stop_pct"]
+                            verdict["trailing_stop_pct"], verdict,
+                            q_result=q_result, sentiment=sentiment,
+                            insider=insider, social=social, options=options,
                         )
                         log.info(f"  ✓ Trade complete: {symbol} filled @ ${exec_result['fill_price']:.2f}")
                     elif exec_result["status"] == "market_closed":
@@ -348,6 +409,8 @@ def run_cycle():
                 else:
                     stats["skipped"] += 1
                     log.info(f"  ○ Skipped: {verdict['reasoning'][:100]}")
+                    # V5: Near-miss skip card
+                    telegram.skip_card(symbol, verdict["confidence"], verdict, q_result)
                     telegram.trade_skipped(symbol, verdict["reasoning"])
 
             except Exception as e:

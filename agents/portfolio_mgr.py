@@ -51,7 +51,9 @@ class PortfolioManager:
     def decide(self, symbol: str, asset_type: str,
                quant_result: dict, sentiment_result: dict,
                risk_result: dict, account_equity: float,
-               peak_equity: float) -> dict:
+               peak_equity: float,
+               insider_result: dict = None,
+               options_result: dict = None) -> dict:
         """
         Final trade decision with position sizing.
 
@@ -94,6 +96,16 @@ class PortfolioManager:
             adjusted_sentiment * config.WEIGHT_SENTIMENT +
             risk_score * config.WEIGHT_RISK
         )
+
+        # ─── V5: Insider + Options Score Adjustments ─────────────────
+        insider_score = (insider_result or {}).get("score", 0)
+        options_score = (options_result or {}).get("score", 0)
+        # Each point of insider/options score = 1.5% confidence boost/penalty
+        confidence += (insider_score + options_score) * 1.5
+        if insider_score != 0:
+            log.info(f"Insider adjustment: {insider_score:+d} → confidence now {confidence:.1f}%")
+        if options_score != 0:
+            log.info(f"Options adjustment: {options_score:+d} → confidence now {confidence:.1f}%")
 
         components = {
             "quant": f"{quant_score:.1f} × {config.WEIGHT_QUANT} = {quant_score * config.WEIGHT_QUANT:.1f}",
@@ -150,7 +162,9 @@ class PortfolioManager:
         if should_trade and confidence >= threshold:
             reasoner_result = self._reasoner_verdict(
                 symbol, direction, quant_result, sentiment_result,
-                risk_result, confidence, account_equity
+                risk_result, confidence, account_equity,
+                insider_result=insider_result,
+                options_result=options_result,
             )
             if reasoner_result:
                 deepseek_reasoning = reasoner_result.get("reasoning", "")
@@ -218,7 +232,9 @@ class PortfolioManager:
     def _reasoner_verdict(self, symbol: str, direction: str,
                           quant_result: dict, sentiment_result: dict,
                           risk_result: dict, confidence: float,
-                          equity: float) -> Optional[dict]:
+                          equity: float,
+                          insider_result: dict = None,
+                          options_result: dict = None) -> Optional[dict]:
         """
         Calls DeepSeek Reasoner (thinking model) for a final high-stakes verdict.
         The reasoner uses chain-of-thought to validate the trade decision.
@@ -260,6 +276,14 @@ RISK ASSESSMENT:
 - Grade: {risk_result.get('grade', 'N/A')}
 - Flags: {risk_result.get('flags', [])}
 - Reasoning: {risk_result.get('reasoning', '')}
+
+INSIDER TRADING (SEC Form 4, last {config.INSIDER_LOOKBACK_DAYS} days):
+- {(insider_result or {}).get('summary', 'No data')} (score: {(insider_result or {}).get('score', 0):+d})
+
+OPTIONS FLOW:
+- {(options_result or {}).get('summary', 'No data')} (score: {(options_result or {}).get('score', 0):+d})
+- Unusual Calls: {(options_result or {}).get('unusual_calls', False)} | Unusual Puts: {(options_result or {}).get('unusual_puts', False)}
+- Put/Call Ratio: {(options_result or {}).get('pc_ratio', 'N/A')}
 {ml_feedback}
 Respond with ONLY this JSON:
 {{

@@ -163,6 +163,33 @@ DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", 8080))
 
 
+# ─── V5: WebSocket Live Streaming ───────────────────────────────────────────
+LIVE_STREAM_ENABLED = os.getenv("LIVE_STREAM_ENABLED", "true").lower() == "true"
+SPIKE_ALERT_PCT = float(os.getenv("SPIKE_ALERT_PCT", 2.0))        # Alert on ≥2% bar move
+
+# ─── V5: Pre-Market / After-Hours Scanning ──────────────────────────────────
+PREMARKET_ENABLED = os.getenv("PREMARKET_ENABLED", "true").lower() == "true"
+AFTER_HOURS_ENABLED = os.getenv("AFTER_HOURS_ENABLED", "true").lower() == "true"
+PREMARKET_MIN_GAP_PCT = float(os.getenv("PREMARKET_MIN_GAP_PCT", 2.0))   # Min gap % to queue
+
+# ─── V5: Insider Trading Tracker ────────────────────────────────────────────
+INSIDER_ENABLED = os.getenv("INSIDER_ENABLED", "true").lower() == "true"
+INSIDER_LOOKBACK_DAYS = int(os.getenv("INSIDER_LOOKBACK_DAYS", 14))       # Look back 14 days
+
+# ─── V5: Social Sentiment (Reddit/WSB) ──────────────────────────────────────
+SOCIAL_SENTIMENT_ENABLED = os.getenv("SOCIAL_SENTIMENT_ENABLED", "true").lower() == "true"
+WSB_MIN_MENTIONS = int(os.getenv("WSB_MIN_MENTIONS", 5))          # Minimum mentions to score
+REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "SentinelAutotrader/5.0")
+
+# ─── V5: Options Flow ────────────────────────────────────────────────────────
+OPTIONS_FLOW_ENABLED = os.getenv("OPTIONS_FLOW_ENABLED", "true").lower() == "true"
+OPTIONS_VOLUME_THRESHOLD = float(os.getenv("OPTIONS_VOLUME_THRESHOLD", 3.0))  # 3x avg = unusual
+
+# ─── V5: Trade Explanation Cards ─────────────────────────────────────────────
+TRADE_CARDS_ENABLED = os.getenv("TRADE_CARDS_ENABLED", "true").lower() == "true"
+SKIP_CARD_MIN_CONFIDENCE = float(os.getenv("SKIP_CARD_MIN_CONFIDENCE", 45.0)) # Only card near-misses
+
+
 # ─── Paths ──────────────────────────────────────────────────────────────────
 import pathlib
 PROJECT_ROOT = pathlib.Path(__file__).parent
