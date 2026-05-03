@@ -412,14 +412,6 @@ class AlpacaBroker:
                             f"${fill_info['filled_avg_price']:.2f} "
                             f"qty={total_qty:.4f}, trailing stop @ {trailing_stop_pct}%"
                         )
-                elif is_crypto:
-                    # For crypto, we skip trailing stops but the trade is still 'complete'
-                    result["status"] = "complete"
-                    log.info(
-                        f"Trade complete (Crypto): {direction.upper()} {symbol} filled @ "
-                        f"${fill_info['filled_avg_price']:.2f} "
-                        f"qty={total_qty:.4f} (No trailing stop)"
-                    )
 
         return result
 
