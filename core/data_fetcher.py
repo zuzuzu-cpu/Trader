@@ -260,7 +260,11 @@ class DataFetcher:
             return fundamentals
 
         except Exception as e:
-            log.warning(f"Failed to fetch fundamentals for {symbol}: {e}")
+            err_msg = str(e)
+            if "No fundamentals data found" in err_msg or "Quote not found" in err_msg:
+                # Silently skip ETFs and obscure tickers that don't have company fundamentals
+                return {}
+            log.warning(f"Failed to fetch fundamentals for {symbol}: {err_msg}")
             return None
 
     # ─── V5: Deep Fundamentals (FMP / Finnhub / SEC) ─────────────────────

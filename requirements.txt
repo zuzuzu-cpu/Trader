@@ -11,3 +11,4 @@ pyarrow>=15.0.0
 flask>=3.0.0
 websocket-client>=1.7.0
 praw>=7.7.0
+pytz>=2024.1

@@ -71,6 +71,13 @@ class AlpacaBroker:
     @retry_on_rate_limit
     def is_market_open(self) -> bool:
         """Checks if the US stock market is currently open using Alpaca's clock API."""
+        # Safety net: Manually check for weekends (Sat=5, Sun=6)
+        from datetime import datetime
+        import pytz
+        ny_time = datetime.now(pytz.timezone('America/New_York'))
+        if ny_time.weekday() >= 5:
+            return False
+
         alpaca_limiter.acquire()
         try:
             clock = self.trading_client.get_clock()
