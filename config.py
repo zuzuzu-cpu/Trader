@@ -32,8 +32,8 @@ NEWSAPI_RATE_LIMIT = int(os.getenv("NEWSAPI_RATE_LIMIT", 90))       # 100/day fr
 
 
 # ─── Async Processing ──────────────────────────────────────────────────────
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", 10))                      # ThreadPoolExecutor workers
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", 20))                        # Symbols per batch
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", 15))                      # ThreadPoolExecutor workers
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", 100))                       # Symbols per batch
 
 
 # ─── Universe Scanning ──────────────────────────────────────────────────────
@@ -41,6 +41,7 @@ MIN_PRICE = float(os.getenv("MIN_PRICE", 5.0))                      # Skip penny
 MAX_PRICE = float(os.getenv("MAX_PRICE", 10000.0))
 MIN_DAILY_VOLUME = int(os.getenv("MIN_DAILY_VOLUME", 500_000))      # Minimum avg daily volume
 MIN_MARKET_CAP = float(os.getenv("MIN_MARKET_CAP", 500_000_000))    # $500M minimum market cap
+MAX_UNIVERSE_SIZE = int(os.getenv("MAX_UNIVERSE_SIZE", 10000))     # Max assets to scan
 
 # Static watchlists (augment dynamic scanning)
 CRYPTO_SYMBOLS = [

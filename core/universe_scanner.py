@@ -29,17 +29,17 @@ class UniverseScanner:
             config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, paper=True
         )
 
-    def scan_stocks(self, max_symbols: int = 200) -> list[str]:
+    def scan_stocks(self, max_symbols: int = 10000) -> list[str]:
         """
-        Scans all US equities on Alpaca, filtering by:
+        Scans all tradable equities on Alpaca, filtering by:
         - Must be tradable
         - Must be fractionable (for small position sizes)
-        - Must not be an ETF (separate scanner for those)
-
-        Returns up to max_symbols stock tickers.
+        
+        Returns up to max_symbols tickers.
         """
         alpaca_limiter.acquire()
         try:
+            # Fetch US Equities
             request = GetAssetsRequest(
                 asset_class=AssetClass.US_EQUITY,
                 status=AssetStatus.ACTIVE,
@@ -48,16 +48,12 @@ class UniverseScanner:
 
             stocks = []
             for asset in all_assets:
-                if not asset.tradable:
+                if not asset.tradable or not asset.fractionable:
                     continue
-                if not asset.fractionable:
-                    continue
-                # Skip known ETF symbols (Alpaca doesn't cleanly separate ETFs from stocks)
-                if asset.symbol in config.ETF_SYMBOLS:
-                    continue
+                # Note: We include ETFs in this pool now to ensure nothing is missed
                 stocks.append(asset.symbol)
 
-            log.info(f"Universe scan found {len(stocks)} tradable, fractionable stocks")
+            log.info(f"Universe scan found {len(stocks)} tradable, fractionable assets")
             return stocks[:max_symbols]
 
         except Exception as e:
@@ -66,11 +62,9 @@ class UniverseScanner:
 
     def scan_etfs(self) -> list[str]:
         """
-        Returns the curated ETF watchlist from config.
-        ETFs are pre-curated because Alpaca doesn't distinguish ETFs from stocks
-        in the asset class, and we want specific liquid ETFs.
+        Returns a verified list of liquid ETFs from config.
+        Since Alpaca mixes ETFs into US_EQUITY, we use a curated list for focus.
         """
-        # Verify which ETFs are actually tradable on Alpaca
         alpaca_limiter.acquire()
         try:
             request = GetAssetsRequest(
@@ -81,17 +75,16 @@ class UniverseScanner:
             tradable_symbols = {a.symbol for a in all_assets if a.tradable}
 
             etfs = [s for s in config.ETF_SYMBOLS if s in tradable_symbols]
-            log.info(f"ETF scan: {len(etfs)}/{len(config.ETF_SYMBOLS)} ETFs are tradable")
+            log.info(f"ETF scan verified {len(etfs)} tradable ETFs")
             return etfs
 
         except Exception as e:
             log.error(f"ETF scan failed: {e}")
-            return config.ETF_SYMBOLS  # Fallback to full list
+            return config.ETF_SYMBOLS
 
     def scan_crypto(self) -> list[str]:
         """
-        Returns the curated crypto watchlist from config.
-        Alpaca's crypto universe is smaller, so we use a curated list.
+        Returns ALL tradable crypto pairs supported by Alpaca.
         """
         alpaca_limiter.acquire()
         try:
@@ -102,16 +95,13 @@ class UniverseScanner:
             all_assets = self.trading_client.get_all_assets(request)
             tradable = [a.symbol for a in all_assets if a.tradable]
             log.info(f"Crypto scan found {len(tradable)} tradable crypto pairs")
-
-            # Prefer our curated list but add any new ones Alpaca supports
-            result = [s for s in config.CRYPTO_SYMBOLS if s.replace("/", "") in [t.replace("/", "") for t in tradable]]
-            return result if result else config.CRYPTO_SYMBOLS
+            return tradable
 
         except Exception as e:
             log.error(f"Crypto scan failed: {e}")
             return config.CRYPTO_SYMBOLS
 
-    def get_full_universe(self, max_stocks: int = 200) -> dict[str, list[str]]:
+    def get_full_universe(self, max_stocks: int = 10000) -> dict[str, list[str]]:
         """
         Returns the full trading universe as a dict:
         {
@@ -128,8 +118,8 @@ class UniverseScanner:
 
         total = sum(len(v) for v in universe.values())
         log.info(
-            f"Full universe: {total} assets "
-            f"({len(universe['stocks'])} stocks, "
+            f"Full universe expanded to {total} assets "
+            f"({len(universe['stocks'])} stocks/ADRs, "
             f"{len(universe['etfs'])} ETFs, "
             f"{len(universe['crypto'])} crypto)"
         )

@@ -180,15 +180,24 @@ def run_cycle():
 
         # ─── Step 1: Universe Scanning ───────────────────────────────
         log.info("Step 1: Scanning trading universe...")
-        universe = scanner.get_full_universe(max_stocks=200)
+        universe = scanner.get_full_universe(max_stocks=config.MAX_UNIVERSE_SIZE)
         stats["universe"] = sum(len(v) for v in universe.values())
 
-        # ─── Step 2: Quantitative Filtering (ASYNC) ──────────────────
-        log.info(f"Step 2: Running parallel quantitative screening ({config.MAX_WORKERS} workers)...")
+        # ─── Step 1.5: Batch Prefetching (Rate Limit Focus) ──────────
+        # Warm up the cache for thousands of assets in optimized batches
+        # This prevents 8,000 individual API calls during screening
         end_date = datetime.now()
         start_date = end_date - timedelta(days=config.LOOKBACK_DAYS)
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
+
+        if not _shutdown:
+            log.info("Warming up data cache for full universe...")
+            fetcher.prefetch_stock_bars(universe["stocks"], start_str, end_str)
+            fetcher.prefetch_crypto_bars(universe["crypto"], start_str, end_str)
+
+        # ─── Step 2: Quantitative Filtering (ASYNC) ──────────────────
+        log.info(f"Step 2: Running parallel quantitative screening ({config.MAX_WORKERS} workers)...")
 
         candidates = []
 

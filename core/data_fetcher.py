@@ -378,6 +378,87 @@ class DataFetcher:
         """
         return self.get_stock_bars(config.BENCHMARK_SYMBOL, start_date, end_date)
 
+    # ─── Batch Prefetching (Performance) ───────────────────────────────
+    
+    def prefetch_stock_bars(self, symbols: list[str], start_date: str, end_date: str):
+        """Fetches bars for hundreds of stocks in optimized batches to respect rate limits."""
+        if not symbols: return
+        batch_size = 100
+        for i in range(0, len(symbols), batch_size):
+            batch = symbols[i:i + batch_size]
+            log.info(f"Prefetching stock bars: batch {i//batch_size + 1}/{(len(symbols)-1)//batch_size + 1}")
+            
+            alpaca_limiter.acquire()
+            try:
+                req = StockBarsRequest(
+                    symbol_or_symbols=batch,
+                    timeframe=TimeFrame.Day,
+                    start=start_date,
+                    end=end_date,
+                )
+                bars = self.stock_client.get_stock_bars(req)
+                df_all = bars.df
+                
+                if not df_all.empty:
+                    # Split multi-index DF by symbol and cache individually
+                    for symbol in batch:
+                        if symbol in df_all.index.get_level_values(0):
+                            df_sym = df_all.xs(symbol).reset_index()
+                            df_sym.columns = [c.lower() for c in df_sym.columns]
+                            cache_key = f"bars_{symbol}_{start_date}_{end_date}_{TimeFrame.Day}"
+                            self._write_cache(cache_key, df_sym)
+            except Exception as e:
+                log.debug(f"Batch prefetch failed for {len(batch)} symbols: {e}")
+
+    def prefetch_crypto_bars(self, symbols: list[str], start_date: str, end_date: str):
+        """Fetches bars for all crypto pairs in batches."""
+        if not symbols: return
+        batch_size = 50 # Crypto requests are heavier
+        for i in range(0, len(symbols), batch_size):
+            batch = symbols[i:i + batch_size]
+            alpaca_limiter.acquire()
+            try:
+                req = CryptoBarsRequest(
+                    symbol_or_symbols=batch,
+                    timeframe=TimeFrame.Day,
+                    start=start_date,
+                    end=end_date,
+                )
+                bars = self.crypto_client.get_crypto_bars(req)
+                df_all = bars.df
+                if not df_all.empty:
+                    for symbol in batch:
+                        if symbol in df_all.index.get_level_values(0):
+                            df_sym = df_all.xs(symbol).reset_index()
+                            df_sym.columns = [c.lower() for c in df_sym.columns]
+                            cache_key = f"crypto_{symbol}_{start_date}_{end_date}_{TimeFrame.Day}"
+                            self._write_cache(cache_key, df_sym)
+            except Exception as e:
+                log.debug(f"Crypto prefetch failed: {e}")
+
+    def prefetch_fundamentals(self, symbols: list[str]):
+        """Fetches fundamentals for a list of symbols using yfinance batching."""
+        if not symbols: return
+        # Limit to first 1000 for fundamentals to avoid IP blocks (yfinance is sensitive)
+        target_symbols = symbols[:1000]
+        log.info(f"Prefetching fundamentals for top {len(target_symbols)} candidates...")
+        
+        try:
+            tickers = yf.Tickers(" ".join(target_symbols))
+            for sym in target_symbols:
+                try:
+                    # Accessing .info triggers a fetch if not already done by yf.Tickers
+                    info = tickers.tickers[sym].info
+                    if info:
+                        # Process and cache similarly to get_fundamentals
+                        # For brevity, we just populate the in-memory cache
+                        # get_fundamentals will then return this immediately
+                        self.get_fundamentals(sym) 
+                except Exception:
+                    continue
+        except Exception as e:
+            log.debug(f"Fundamentals prefetch failed: {e}")
+
     # ─── Cache Helpers ───────────────────────────────────────────────────
 
     def _cache_path(self, key: str) -> Path:
