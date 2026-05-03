@@ -87,6 +87,11 @@ class AlpacaBroker:
             return False  # Assume closed if we can't check
 
     # ─── Order Execution ─────────────────────────────────────────────
+    
+    def _format_symbol(self, symbol: str) -> str:
+        """Standardizes symbol format: Crypto gets slashes, Stocks don't."""
+        is_crypto = "/" in symbol or any(c in symbol for c in ["USD", "BTC", "ETH"]) and len(symbol) > 5
+        return symbol if is_crypto else symbol.replace("/", "")
 
     @retry_on_rate_limit
     def place_buy_order(self, symbol: str, notional: float,
@@ -107,7 +112,7 @@ class AlpacaBroker:
 
         try:
             order_request = MarketOrderRequest(
-                symbol=symbol.replace("/", ""),  # Alpaca crypto uses BTCUSD not BTC/USD
+                symbol=self._format_symbol(symbol),
                 notional=round(notional, 2),
                 side=OrderSide.BUY,
                 time_in_force=tif,
@@ -135,7 +140,7 @@ class AlpacaBroker:
         alpaca_limiter.acquire()
         try:
             order_request = MarketOrderRequest(
-                symbol=symbol.replace("/", ""),
+                symbol=self._format_symbol(symbol),
                 notional=round(notional, 2),
                 side=OrderSide.SELL,
                 time_in_force=TimeInForce.DAY,
@@ -166,7 +171,7 @@ class AlpacaBroker:
         order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
         try:
             stop_request = TrailingStopOrderRequest(
-                symbol=symbol.replace("/", ""),
+                symbol=self._format_symbol(symbol),
                 qty=abs(qty),
                 side=order_side,
                 time_in_force=TimeInForce.GTC,
@@ -197,7 +202,7 @@ class AlpacaBroker:
         order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
         try:
             limit_request = LimitOrderRequest(
-                symbol=symbol.replace("/", ""),
+                symbol=self._format_symbol(symbol),
                 qty=qty,
                 side=order_side,
                 time_in_force=TimeInForce.GTC,
