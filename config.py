@@ -122,6 +122,25 @@ TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", 3.0))      # 3% trailin
 ATR_RISK_MULTIPLIER = float(os.getenv("ATR_RISK_MULTIPLIER", 1.5))  # Stop = ATR * multiplier
 
 
+# ─── Kelly Criterion Position Sizing ────────────────────────────────────────
+KELLY_ENABLED = os.getenv("KELLY_ENABLED", "true").lower() == "true"
+KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", 0.25))            # Use 1/4 Kelly (conservative)
+KELLY_MIN_TRADES = int(os.getenv("KELLY_MIN_TRADES", 10))             # Need at least 10 trades for stats
+KELLY_MAX_POSITION_PCT = float(os.getenv("KELLY_MAX_POSITION_PCT", 0.05))  # Cap at 5% even if Kelly says more
+KELLY_MIN_POSITION_PCT = float(os.getenv("KELLY_MIN_POSITION_PCT", 0.005)) # Floor at 0.5%
+
+
+# ─── Partial Profit Taking ──────────────────────────────────────────────────
+PARTIAL_PROFIT_ENABLED = os.getenv("PARTIAL_PROFIT_ENABLED", "true").lower() == "true"
+PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", 5.0))       # Take profit at +5%
+TAKE_PROFIT_RATIO = float(os.getenv("TAKE_PROFIT_RATIO", 0.5))      # Sell 50% at target
+REMAINDER_TRAIL_PCT = float(os.getenv("REMAINDER_TRAIL_PCT", 4.0))   # Wider stop on remainder
+
+
+# ─── Market Hours Awareness ─────────────────────────────────────────────────
+SKIP_CLOSED_MARKET = os.getenv("SKIP_CLOSED_MARKET", "true").lower() == "true"
+
+
 # ─── Scoring Weights ────────────────────────────────────────────────────────
 WEIGHT_QUANT = float(os.getenv("WEIGHT_QUANT", 0.40))
 WEIGHT_SENTIMENT = float(os.getenv("WEIGHT_SENTIMENT", 0.35))

@@ -31,15 +31,22 @@ class PortfolioManager:
     """
     Final decision-maker using DeepSeek Reasoner for high-confidence
     trade verdicts. Supports long and short positions.
+
+    V4 Features:
+    - ML Feedback Loop: injects past trade outcomes into Reasoner prompt
+    - Kelly Criterion: optimal position sizing based on actual win/loss stats
     """
 
-    def __init__(self):
+    def __init__(self, journal=None):
         self.confidence_threshold = config.CONFIDENCE_THRESHOLD
         self.short_threshold = config.SHORT_CONFIDENCE_THRESHOLD
+        self.journal = journal  # TradeJournal for ML feedback
         self.client = OpenAI(
             api_key=config.DEEPSEEK_API_KEY,
             base_url=config.DEEPSEEK_BASE_URL,
         )
+        self._trade_stats_cache = None
+        self._trade_stats_cycle = 0
 
     def decide(self, symbol: str, asset_type: str,
                quant_result: dict, sentiment_result: dict,
@@ -220,6 +227,9 @@ class PortfolioManager:
 
         signals = quant_result.get("signals", {})
 
+        # Build ML feedback block from trade history
+        ml_feedback = self._build_ml_feedback()
+
         prompt = f"""You are the Portfolio Manager of an autonomous trading system.
 The quantitative analysis and risk assessment are complete. You must make the FINAL decision.
 IMPORTANT: This is a paper trading account for learning. You should APPROVE trades that have 
@@ -250,7 +260,7 @@ RISK ASSESSMENT:
 - Grade: {risk_result.get('grade', 'N/A')}
 - Flags: {risk_result.get('flags', [])}
 - Reasoning: {risk_result.get('reasoning', '')}
-
+{ml_feedback}
 Respond with ONLY this JSON:
 {{
     "verdict": "APPROVE" or "REJECT",
@@ -305,24 +315,54 @@ Respond with ONLY this JSON:
                                   quant_result: dict,
                                   confidence: float) -> tuple[float, float]:
         """
-        ATR-based volatility-adjusted position sizing.
+        Position sizing with Kelly Criterion override.
 
-        Higher volatility → smaller position + wider stop
-        Higher confidence → closer to max position size
+        If enough trade history exists, use Kelly Criterion for optimal sizing.
+        Otherwise, fall back to ATR-based volatility-adjusted sizing.
         """
         signals = quant_result.get("signals", {})
         atr = signals.get("atr", 0)
         price = signals.get("price", 0)
 
-        # Base position size (percentage of equity)
-        base_pct = config.MAX_POSITION_PCT
+        # ─── Kelly Criterion (if enabled and enough data) ────────────
+        if config.KELLY_ENABLED and self.journal:
+            stats = self._get_trade_stats()
+            if stats["total_trades"] >= config.KELLY_MIN_TRADES:
+                kelly_raw = stats["kelly_pct"]
+                # Apply fractional Kelly (e.g. 1/4 Kelly for safety)
+                kelly_pct = kelly_raw * config.KELLY_FRACTION
+                # Clamp to configured bounds
+                kelly_pct = max(config.KELLY_MIN_POSITION_PCT,
+                                min(config.KELLY_MAX_POSITION_PCT, kelly_pct))
 
-        # Scale by confidence
-        threshold = self.confidence_threshold
-        confidence_scale = min(1.0, (confidence - threshold) /
-                               (100 - threshold) * 0.5 + 0.5)
+                # Scale by confidence (higher confidence = closer to full Kelly)
+                threshold = self.confidence_threshold
+                conf_scale = min(1.0, (confidence - threshold) /
+                                 (100 - threshold) * 0.5 + 0.5)
 
-        # Scale by volatility (higher ATR = smaller position)
+                base_pct = kelly_pct * conf_scale
+                log.info(
+                    f"Kelly sizing: raw={kelly_raw:.3f}, fractional={kelly_pct:.4f}, "
+                    f"conf_scale={conf_scale:.2f}, final={base_pct:.4f} "
+                    f"(win_rate={stats['win_rate']:.1%}, trades={stats['total_trades']})"
+                )
+            else:
+                # Not enough trades yet, use default
+                base_pct = config.MAX_POSITION_PCT
+                log.info(
+                    f"Kelly: insufficient data ({stats['total_trades']}/{config.KELLY_MIN_TRADES} trades), "
+                    f"using default {base_pct:.1%}"
+                )
+        else:
+            base_pct = config.MAX_POSITION_PCT
+
+            # Scale by confidence (fallback mode)
+            threshold = self.confidence_threshold
+            confidence_scale = min(1.0, (confidence - threshold) /
+                                   (100 - threshold) * 0.5 + 0.5)
+            base_pct = base_pct * confidence_scale
+
+        # ─── Volatility adjustment (always applied) ──────────────────
         if atr > 0 and price > 0:
             atr_pct = atr / price
             vol_scale = min(1.0, 0.01 / max(atr_pct, 0.005))
@@ -330,7 +370,7 @@ Respond with ONLY this JSON:
             vol_scale = 0.5
 
         # Final notional
-        notional = equity * base_pct * confidence_scale * vol_scale
+        notional = equity * base_pct * vol_scale
         notional = max(config.MIN_POSITION_USD, notional)
 
         # Trailing stop based on ATR
@@ -341,3 +381,51 @@ Respond with ONLY this JSON:
             trailing_stop_pct = config.TRAILING_STOP_PCT
 
         return round(notional, 2), round(trailing_stop_pct, 2)
+
+    # ─── ML Feedback Helpers ─────────────────────────────────────────
+
+    def _build_ml_feedback(self) -> str:
+        """Builds a text block of recent trade outcomes for the Reasoner prompt."""
+        if not self.journal:
+            return ""
+
+        try:
+            history = self.journal.get_trade_history(limit=10)
+            if not history:
+                return ""
+
+            stats = self._get_trade_stats()
+
+            lines = ["\nYOUR RECENT TRADE HISTORY (learn from these):"]
+            lines.append(
+                f"Overall: {stats['total_trades']} trades, "
+                f"{stats.get('win_rate', 0):.0%} win rate, "
+                f"profit factor {stats.get('profit_factor', 0):.2f}"
+            )
+
+            for t in history[:10]:
+                pnl = t.get("pnl")
+                pnl_str = f"P&L: ${pnl:+.2f} ({t.get('pnl_pct', 0):+.1f}%)" if pnl is not None else "OPEN/PENDING"
+                exit_str = f", exit: {t['exit_reason']}" if t.get("exit_reason") else ""
+                lines.append(
+                    f"  • {t['side']} {t['symbol']} conf={t.get('confidence', 0):.0f}% "
+                    f"risk={t.get('risk_grade', '?')} → {pnl_str}{exit_str}"
+                )
+
+            lines.append("Use this history to calibrate your decisions. If you've been losing on HIGH_RISK trades, be more cautious. If your win rate is high, be more aggressive.")
+            return "\n".join(lines)
+
+        except Exception as e:
+            log.debug(f"ML feedback generation failed: {e}")
+            return ""
+
+    def _get_trade_stats(self) -> dict:
+        """Gets trade stats with simple per-cycle caching."""
+        if self._trade_stats_cache and self._trade_stats_cycle == id(self):
+            return self._trade_stats_cache
+        try:
+            self._trade_stats_cache = self.journal.get_trade_stats()
+            self._trade_stats_cycle = id(self)
+            return self._trade_stats_cache
+        except Exception:
+            return {"total_trades": 0, "win_rate": 0, "kelly_pct": 0}

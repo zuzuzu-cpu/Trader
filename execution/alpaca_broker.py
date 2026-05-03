@@ -1,22 +1,26 @@
 """
-Alpaca Broker - Paper Trading Execution Engine
+Alpaca Broker - Paper Trading Execution Engine V4
 
 Handles all interaction with Alpaca's Trading API:
 - Market orders with fractional share support (notional)
 - Short selling via market orders
 - Trailing stop orders with fill monitoring
+- Partial profit taking (scale-out at target)
+- Market hours awareness (prevents "not_filled" on closed markets)
 - Extended hours trading
 - Position management and portfolio queries
 - Order status tracking
 """
 import os
 import time
+import math
 from typing import Optional
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     MarketOrderRequest,
     TrailingStopOrderRequest,
+    LimitOrderRequest,
     GetOrdersRequest,
 )
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
@@ -31,7 +35,10 @@ log = get_logger("sentinel.alpaca_broker")
 
 class AlpacaBroker:
     """
-    Production-grade Alpaca paper trading broker.
+    Production-grade Alpaca paper trading broker with V4 features:
+    - Market hours check to avoid "not_filled" errors
+    - Partial profit taking (sell 50% at +5%, trail the rest)
+    - Automatic order cancellation on timeout
     """
 
     def __init__(self):
@@ -58,6 +65,19 @@ class AlpacaBroker:
             "daytrade_count": account.daytrade_count,
             "status": account.status,
         }
+
+    # ─── Market Hours Check ──────────────────────────────────────────
+
+    @retry_on_rate_limit
+    def is_market_open(self) -> bool:
+        """Checks if the US stock market is currently open using Alpaca's clock API."""
+        alpaca_limiter.acquire()
+        try:
+            clock = self.trading_client.get_clock()
+            return clock.is_open
+        except Exception as e:
+            log.warning(f"Failed to check market clock: {e}")
+            return False  # Assume closed if we can't check
 
     # ─── Order Execution ─────────────────────────────────────────────
 
@@ -159,15 +179,60 @@ class AlpacaBroker:
             log.error(f"Unexpected error placing trailing stop for {symbol}: {e}")
             return None
 
+    @retry_on_rate_limit
+    def place_limit_order(self, symbol: str, qty: float, limit_price: float,
+                          side: str = "sell") -> Optional[str]:
+        """
+        Places a limit order for partial profit taking.
+        Returns order ID or None on failure.
+        """
+        alpaca_limiter.acquire()
+        order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
+        try:
+            limit_request = LimitOrderRequest(
+                symbol=symbol.replace("/", ""),
+                qty=qty,
+                side=order_side,
+                time_in_force=TimeInForce.GTC,
+                limit_price=round(limit_price, 2),
+            )
+            order = self.trading_client.submit_order(limit_request)
+            log.info(
+                f"LIMIT ORDER set: {side.upper()} {symbol} qty={qty:.4f} @ ${limit_price:.2f} → order_id={order.id}",
+                extra={"symbol": symbol, "action": "LIMIT", "order_id": str(order.id)}
+            )
+            return str(order.id)
+        except APIError as e:
+            log.error(f"Alpaca API error placing limit order for {symbol}: {e}")
+            return None
+        except Exception as e:
+            log.error(f"Unexpected error placing limit order for {symbol}: {e}")
+            return None
+
+    @retry_on_rate_limit
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancels an open order by ID."""
+        alpaca_limiter.acquire()
+        try:
+            self.trading_client.cancel_order_by_id(order_id)
+            log.info(f"Order cancelled: {order_id}")
+            return True
+        except Exception as e:
+            log.debug(f"Failed to cancel order {order_id}: {e}")
+            return False
+
     def execute_trade(self, symbol: str, notional: float,
                       trailing_stop_pct: float,
                       direction: str = "long",
+                      asset_type: str = "stock",
                       max_wait_seconds: int = 30) -> dict:
         """
-        Full trade execution pipeline for both longs and shorts:
-        1. Place market order (buy for long, sell for short)
-        2. Wait for fill
-        3. Place trailing stop order
+        Full trade execution pipeline V4:
+        1. Check if market is open (for stocks/ETFs)
+        2. Place market order (buy for long, sell for short)
+        3. Wait for fill
+        4. If partial profit enabled: split into take-profit + trailing stop
+        5. Otherwise: place single trailing stop
 
         Returns execution result dict.
         """
@@ -176,12 +241,21 @@ class AlpacaBroker:
             "direction": direction,
             "order_id": None,
             "stop_order_id": None,
+            "take_profit_order_id": None,
             "fill_price": None,
             "fill_qty": None,
             "status": "failed",
         }
 
-        # Step 1: Place order
+        # ─── Step 0: Market hours check (stocks/ETFs only) ───────────
+        is_crypto = asset_type == "crypto" or "/" in symbol
+        if not is_crypto and config.SKIP_CLOSED_MARKET:
+            if not self.is_market_open():
+                log.info(f"Market closed — skipping {direction.upper()} {symbol} (stock/ETF orders won't fill)")
+                result["status"] = "market_closed"
+                return result
+
+        # ─── Step 1: Place order ─────────────────────────────────────
         if direction == "long":
             order_id = self.place_buy_order(symbol, notional)
         else:
@@ -192,10 +266,12 @@ class AlpacaBroker:
             return result
         result["order_id"] = order_id
 
-        # Step 2: Wait for fill
+        # ─── Step 2: Wait for fill ───────────────────────────────────
         fill_info = self._wait_for_fill(order_id, max_wait_seconds)
         if not fill_info:
             log.warning(f"{direction.upper()} order {order_id} for {symbol} did not fill within {max_wait_seconds}s")
+            # Cancel the unfilled order so it doesn't execute later unexpectedly
+            self.cancel_order(order_id)
             result["status"] = "not_filled"
             return result
 
@@ -203,22 +279,79 @@ class AlpacaBroker:
         result["fill_qty"] = fill_info["filled_qty"]
         result["status"] = "filled"
 
-        # Step 3: Place trailing stop
+        # ─── Step 3: Exit strategy ───────────────────────────────────
         if fill_info["filled_qty"] > 0:
-            # For longs: trailing stop SELL; for shorts: trailing stop BUY
             stop_side = "sell" if direction == "long" else "buy"
-            stop_order_id = self.place_trailing_stop(
-                symbol, fill_info["filled_qty"], trailing_stop_pct, side=stop_side
-            )
-            result["stop_order_id"] = stop_order_id
-            if stop_order_id:
-                result["status"] = "complete"
-                log.info(
-                    f"Trade complete: {direction.upper()} {symbol} filled @ ${fill_info['filled_avg_price']:.2f} "
-                    f"qty={fill_info['filled_qty']:.4f}, trailing stop @ {trailing_stop_pct}%"
-                )
+            total_qty = fill_info["filled_qty"]
 
-        return result
+            # ─── Partial profit taking ───────────────────────────
+            if config.PARTIAL_PROFIT_ENABLED and total_qty > 0.01:
+                take_profit_qty = round(total_qty * config.TAKE_PROFIT_RATIO, 4)
+                remainder_qty = round(total_qty - take_profit_qty, 4)
+
+                # Ensure we have valid quantities
+                if take_profit_qty < 0.001:
+                    take_profit_qty = 0
+                    remainder_qty = total_qty
+                if remainder_qty < 0.001:
+                    take_profit_qty = total_qty
+                    remainder_qty = 0
+
+                # Calculate take-profit price
+                fill_price = fill_info["filled_avg_price"]
+                if direction == "long":
+                    tp_price = fill_price * (1 + config.PROFIT_TARGET_PCT / 100)
+                else:
+                    tp_price = fill_price * (1 - config.PROFIT_TARGET_PCT / 100)
+
+                # Place take-profit limit order on first half
+                tp_order_id = None
+                if take_profit_qty > 0:
+                    tp_order_id = self.place_limit_order(
+                        symbol, take_profit_qty, tp_price, side=stop_side
+                    )
+                    result["take_profit_order_id"] = tp_order_id
+                    if tp_order_id:
+                        log.info(
+                            f"Take-profit set: {stop_side.upper()} {take_profit_qty:.4f} "
+                            f"@ ${tp_price:.2f} (+{config.PROFIT_TARGET_PCT}%)"
+                        )
+
+                # Place wider trailing stop on remainder
+                if remainder_qty > 0:
+                    stop_order_id = self.place_trailing_stop(
+                        symbol, remainder_qty, config.REMAINDER_TRAIL_PCT,
+                        side=stop_side
+                    )
+                    result["stop_order_id"] = stop_order_id
+                    if stop_order_id:
+                        log.info(
+                            f"Remainder trailing stop: {remainder_qty:.4f} shares "
+                            f"@ {config.REMAINDER_TRAIL_PCT}% trail"
+                        )
+
+                if (tp_order_id or take_profit_qty == 0) and \
+                   (result.get("stop_order_id") or remainder_qty == 0):
+                    result["status"] = "complete"
+                    log.info(
+                        f"Trade complete (partial profit): {direction.upper()} {symbol} "
+                        f"filled @ ${fill_price:.2f}, qty={total_qty:.4f} "
+                        f"(TP: {take_profit_qty:.4f} @ ${tp_price:.2f}, "
+                        f"Trail: {remainder_qty:.4f} @ {config.REMAINDER_TRAIL_PCT}%)"
+                    )
+            else:
+                # ─── Standard single trailing stop ───────────────
+                stop_order_id = self.place_trailing_stop(
+                    symbol, total_qty, trailing_stop_pct, side=stop_side
+                )
+                result["stop_order_id"] = stop_order_id
+                if stop_order_id:
+                    result["status"] = "complete"
+                    log.info(
+                        f"Trade complete: {direction.upper()} {symbol} filled @ "
+                        f"${fill_info['filled_avg_price']:.2f} "
+                        f"qty={total_qty:.4f}, trailing stop @ {trailing_stop_pct}%"
+                    )
 
         return result
 

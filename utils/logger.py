@@ -137,6 +137,16 @@ class TradeJournal:
                     errors INTEGER DEFAULT 0,
                     status TEXT DEFAULT 'running'
                 );
+
+                CREATE TABLE IF NOT EXISTS trade_outcomes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id TEXT UNIQUE,
+                    pnl REAL,
+                    pnl_pct REAL,
+                    hold_minutes INTEGER,
+                    exit_reason TEXT,
+                    closed_at TEXT
+                );
             """)
 
     def log_decision(self, cycle_id: str, symbol: str, asset_type: str,
@@ -217,3 +227,91 @@ class TradeJournal:
                 "SELECT MAX(equity) FROM portfolio_snapshots"
             ).fetchone()
             return result[0] if result and result[0] else 0.0
+
+    # ─── ML Feedback Loop: Trade History ─────────────────────────────
+
+    def get_trade_history(self, limit: int = 20) -> list[dict]:
+        """
+        Returns the last N trades with outcome data for ML feedback.
+        Used to inject trade memory into the DeepSeek Reasoner prompt.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT t.symbol, t.side, t.notional, t.confidence,
+                       t.quant_score, t.sentiment_score, t.risk_grade,
+                       t.reasoning, t.timestamp,
+                       o.pnl, o.pnl_pct, o.hold_minutes, o.exit_reason
+                FROM trades t
+                LEFT JOIN trade_outcomes o ON t.order_id = o.order_id
+                WHERE t.status != 'failed'
+                ORDER BY t.id DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_trade_stats(self) -> dict:
+        """
+        Computes aggregate trade statistics for Kelly Criterion.
+        Returns win_rate, avg_win, avg_loss, total_trades, profit_factor.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Get all closed trades with P&L
+            rows = conn.execute("""
+                SELECT o.pnl, o.pnl_pct
+                FROM trade_outcomes o
+                WHERE o.pnl IS NOT NULL
+            """).fetchall()
+
+            if not rows:
+                return {
+                    "total_trades": 0, "win_rate": 0.0,
+                    "avg_win_pct": 0.0, "avg_loss_pct": 0.0,
+                    "profit_factor": 0.0, "kelly_pct": 0.0,
+                }
+
+            wins = [r["pnl_pct"] for r in rows if r["pnl_pct"] and r["pnl_pct"] > 0]
+            losses = [abs(r["pnl_pct"]) for r in rows if r["pnl_pct"] and r["pnl_pct"] < 0]
+
+            total = len(rows)
+            win_rate = len(wins) / total if total > 0 else 0
+            avg_win = sum(wins) / len(wins) if wins else 0
+            avg_loss = sum(losses) / len(losses) if losses else 0.001  # Avoid div/0
+
+            # Profit factor = gross wins / gross losses
+            gross_wins = sum(wins) if wins else 0
+            gross_losses = sum(losses) if losses else 0.001
+            profit_factor = gross_wins / gross_losses
+
+            # Kelly Criterion: f* = (bp - q) / b
+            # b = avg_win / avg_loss, p = win_rate, q = 1 - win_rate
+            b = avg_win / avg_loss if avg_loss > 0 else 1
+            p = win_rate
+            q = 1 - p
+            kelly = (b * p - q) / b if b > 0 else 0
+            kelly = max(0, kelly)  # Never go negative
+
+            return {
+                "total_trades": total,
+                "wins": len(wins),
+                "losses": len(losses),
+                "win_rate": round(win_rate, 4),
+                "avg_win_pct": round(avg_win, 4),
+                "avg_loss_pct": round(avg_loss, 4),
+                "profit_factor": round(profit_factor, 4),
+                "kelly_pct": round(kelly, 4),
+            }
+
+    def log_trade_outcome(self, order_id: str, pnl: float, pnl_pct: float,
+                          hold_minutes: int, exit_reason: str):
+        """Records the outcome of a closed trade for ML feedback."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO trade_outcomes
+                (order_id, pnl, pnl_pct, hold_minutes, exit_reason, closed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (order_id, pnl, pnl_pct, hold_minutes, exit_reason,
+                  datetime.now(timezone.utc).isoformat()))
+
