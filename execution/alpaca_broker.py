@@ -24,6 +24,8 @@ from alpaca.trading.requests import (
     GetOrdersRequest,
 )
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+from alpaca.data.historical import CryptoHistoricalDataClient
+from alpaca.data.requests import CryptoLatestQuoteRequest
 from alpaca.common.exceptions import APIError
 
 import config
@@ -46,6 +48,11 @@ class AlpacaBroker:
             config.ALPACA_API_KEY,
             config.ALPACA_SECRET_KEY,
             paper=True,
+        )
+        # For fetching crypto prices to convert notional -> qty
+        self.crypto_data_client = CryptoHistoricalDataClient(
+            config.ALPACA_API_KEY,
+            config.ALPACA_SECRET_KEY
         )
 
     # ─── Account ─────────────────────────────────────────────────────
@@ -111,6 +118,34 @@ class AlpacaBroker:
             tif = TimeInForce.DAY # DAY is required for extended hours stocks
             
         try:
+            # ─── V5: Use qty instead of notional for Crypto ─────────
+            # Many crypto pairs in Alpaca paper trading require qty
+            if is_crypto:
+                try:
+                    alpaca_limiter.acquire()
+                    quote_req = CryptoLatestQuoteRequest(symbol_or_symbols=self._format_symbol(symbol))
+                    quote = self.crypto_data_client.get_crypto_latest_quote(quote_req)
+                    price = float(quote[self._format_symbol(symbol)].ask_price)
+                    
+                    if price > 0:
+                        qty = notional / price
+                        # Crypto quantity precision: SHIB needs many decimals, BTC needs few.
+                        # Using 8 decimals is safe for most coins on Alpaca.
+                        qty = round(qty, 8)
+                        
+                        order_request = MarketOrderRequest(
+                            symbol=self._format_symbol(symbol),
+                            qty=qty,
+                            side=OrderSide.BUY,
+                            time_in_force=tif,
+                        )
+                        order = self.trading_client.submit_order(order_request)
+                        log.info(f"BUY order (QTY) submitted: {symbol} qty={qty} (@~${price:.2f}) → order_id={order.id}")
+                        return str(order.id)
+                except Exception as e:
+                    log.warning(f"Failed to fetch price or place qty order for {symbol}, falling back to notional: {e}")
+
+            # Fallback or Stock/ETF logic
             order_request = MarketOrderRequest(
                 symbol=self._format_symbol(symbol),
                 notional=round(notional, 2),
@@ -128,7 +163,7 @@ class AlpacaBroker:
             log.error(f"Alpaca API error placing buy for {symbol}: {e}")
             return None
         except Exception as e:
-            log.error(f"Unexpected error placing buy for {symbol}: {e}")
+            log.error(f"Unexpected error placing buy for {symbol}: {e}", exc_info=True)
             return None
 
     @retry_on_rate_limit
@@ -137,6 +172,12 @@ class AlpacaBroker:
         Places a market short sell order using notional (dollar amount).
         Returns the order ID or None on failure.
         """
+        # Block crypto shorting (not supported by Alpaca)
+        is_crypto = "/" in symbol or any(c in symbol for c in ["USD", "BTC", "ETH"]) and len(symbol) > 5
+        if is_crypto:
+            log.warning(f"Shorting not supported for Crypto ({symbol}). Skipping.")
+            return None
+
         alpaca_limiter.acquire()
         try:
             order_request = MarketOrderRequest(
@@ -155,7 +196,7 @@ class AlpacaBroker:
             log.error(f"Alpaca API error placing short for {symbol}: {e}")
             return None
         except Exception as e:
-            log.error(f"Unexpected error placing short for {symbol}: {e}")
+            log.error(f"Unexpected error placing short for {symbol}: {e}", exc_info=True)
             return None
 
     @retry_on_rate_limit
@@ -467,8 +508,10 @@ class AlpacaBroker:
         try:
             # First cancel any open orders so we can fully close
             open_orders = self.trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[self._format_symbol(symbol)]))
-            for o in open_orders:
-                self.trading_client.cancel_order_by_id(o.id)
+            if open_orders:
+                for o in open_orders:
+                    self.trading_client.cancel_order_by_id(o.id)
+                time.sleep(1.5)  # Wait for cancellations to be processed by Alpaca
 
             self.trading_client.close_position(self._format_symbol(symbol))
             log.info(f"Position closed: {symbol}")

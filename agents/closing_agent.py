@@ -134,34 +134,50 @@ Respond with ONLY valid JSON:
             return None
 
     def _parse_response(self, raw: str) -> dict:
-        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if json_match:
-            raw = json_match.group(0)
+        # 1. Clean markdown code blocks if present
+        clean_raw = raw
+        if "```json" in raw:
+            json_match = re.search(r'```json\s*(.*?)\s*```', raw, re.DOTALL)
+            if json_match:
+                clean_raw = json_match.group(1)
+        elif "```" in raw:
+            json_match = re.search(r'```\s*(.*?)\s*```', raw, re.DOTALL)
+            if json_match:
+                clean_raw = json_match.group(1)
+        
+        # 2. Extract first curly brace block if still not clean
+        if not clean_raw.strip().startswith("{"):
+            json_match = re.search(r'\{.*\}', clean_raw, re.DOTALL)
+            if json_match:
+                clean_raw = json_match.group(0)
 
         try:
-            data = json.loads(raw)
+            data = json.loads(clean_raw)
             return {
                 "verdict": str(data.get("verdict") or "HOLD"),
                 "confidence": float(data.get("confidence") or 0.0),
                 "sell_pct": float(data.get("sell_pct") or 0.5),
                 "new_trail_pct": float(data.get("new_trail_pct") or 1.5),
                 "reasoning": str(data.get("reasoning") or "")[:300],
-                "deepseek_reasoning": "",  # Reasoner CoT text could be extracted if needed
+                "deepseek_reasoning": "", 
             }
         except Exception as e:
-            log.warning(f"Failed to parse closing agent JSON: {e}")
+            log.warning(f"Failed to parse closing agent JSON: {e} | Raw starts with: {raw[:100]}...")
             
-            # Fallback regex parsing if AI generated broken JSON
+            # Fallback regex parsing with improved reasoning extraction
             v_match = re.search(r'"verdict"\s*:\s*"([A-Z_]+)"', raw)
             c_match = re.search(r'"confidence"\s*:\s*([0-9.]+)', raw)
+            r_match = re.search(r'"reasoning"\s*:\s*"(.*?)"', raw)
             
             verdict = v_match.group(1) if v_match else "HOLD"
             conf = float(c_match.group(1)) if c_match else 0.0
+            reason = r_match.group(1) if r_match else "Parsed via fallback regex due to invalid JSON formatting"
             
             return {
                 "verdict": verdict,
                 "confidence": conf,
                 "sell_pct": 0.5,
                 "new_trail_pct": 1.5,
-                "reasoning": "Parsed via fallback regex due to invalid JSON formatting"
+                "reasoning": f"(REGEX) {reason}"[:300]
             }
+
