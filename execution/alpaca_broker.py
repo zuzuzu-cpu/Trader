@@ -97,8 +97,17 @@ class AlpacaBroker:
     
     def _format_symbol(self, symbol: str) -> str:
         """Standardizes symbol format: Crypto gets slashes, Stocks don't."""
-        is_crypto = "/" in symbol or any(c in symbol for c in ["USD", "BTC", "ETH"]) and len(symbol) > 5
-        return symbol if is_crypto else symbol.replace("/", "")
+        # Check if it's already got a slash
+        if "/" in symbol:
+            return symbol
+            
+        # Detect crypto (e.g. BTCUSD, ADAUSD)
+        is_crypto = any(c in symbol for c in ["USD", "BTC", "ETH"]) and len(symbol) >= 6
+        if is_crypto and "USD" in symbol:
+            # Inject slash before USD
+            return f"{symbol[:-3]}/{symbol[-3:]}"
+            
+        return symbol.replace("/", "")
 
     @retry_on_rate_limit
     def place_buy_order(self, symbol: str, notional: float,
@@ -427,20 +436,11 @@ class AlpacaBroker:
                         f"Trade complete (partial profit): {direction.upper()} {symbol} "
                         f"filled @ ${fill_price:.2f}, qty={total_qty:.4f} "
                         f"(TP: {take_profit_qty:.4f} @ ${tp_price:.2f}, "
-                        f"Trail: {remainder_qty:.4f} @ {config.REMAINDER_TRAIL_PCT}%)"
-                    )
+                else:
+                    log.warning(f"Partial exit strategy partially failed for {symbol}. TP={tp_ok}, SL={stop_ok}")
+                    result["status"] = "complete" # Still mark as complete since entry filled
             else:
                 # ─── Standard single exit strategy ───────────────
-                if is_crypto:
-                    # Trailing stops unsupported for crypto, use a take-profit limit order
-                    tp_price = fill_info["filled_avg_price"] * (1 + config.PROFIT_TARGET_PCT / 100) if direction == "long" else fill_info["filled_avg_price"] * (1 - config.PROFIT_TARGET_PCT / 100)
-                    stop_order_id = self.place_limit_order(symbol, total_qty, tp_price, side=stop_side)
-                    if stop_order_id:
-                        result["status"] = "complete"
-                        log.info(
-                            f"Trade complete: Crypto {direction.upper()} {symbol} filled @ "
-                            f"${fill_info['filled_avg_price']:.2f} "
-                            f"qty={total_qty:.4f}, full take-profit limit @ ${tp_price:.2f}"
                         )
                 else:
                     stop_order_id = self.place_trailing_stop(

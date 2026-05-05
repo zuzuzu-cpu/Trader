@@ -296,7 +296,7 @@ Respond with ONLY this JSON:
             response = self.client.chat.completions.create(
                 model=config.DEEPSEEK_REASONER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=500,
+                max_tokens=1000,
                 temperature=0.1,
             )
             raw = response.choices[0].message.content.strip()

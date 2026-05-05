@@ -123,7 +123,7 @@ Respond with ONLY valid JSON:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=400,
+                max_tokens=1000,
                 temperature=0.1,
             )
             raw = response.choices[0].message.content.strip()
@@ -162,16 +162,22 @@ Respond with ONLY valid JSON:
                 "deepseek_reasoning": "", 
             }
         except Exception as e:
-            log.warning(f"Failed to parse closing agent JSON: {e} | Raw starts with: {raw[:100]}...")
+            log.info(f"Using fallback parser for {self.__class__.__name__} (JSON error: {e})")
             
-            # Fallback regex parsing with improved reasoning extraction
+            # Fallback regex parsing with improved reasoning extraction (handles truncated strings)
             v_match = re.search(r'"verdict"\s*:\s*"([A-Z_]+)"', raw)
             c_match = re.search(r'"confidence"\s*:\s*([0-9.]+)', raw)
-            r_match = re.search(r'"reasoning"\s*:\s*"(.*?)"', raw)
+            # Greedily match reasoning even if it doesn't end with a quote (handles truncation)
+            r_match = re.search(r'"reasoning"\s*:\s*"(.*)', raw)
             
             verdict = v_match.group(1) if v_match else "HOLD"
             conf = float(c_match.group(1)) if c_match else 0.0
-            reason = r_match.group(1) if r_match else "Parsed via fallback regex due to invalid JSON formatting"
+            
+            reason = "Parsed via fallback regex due to invalid JSON formatting"
+            if r_match:
+                reason = r_match.group(1)
+                # Strip trailing garbage
+                reason = re.sub(r'["\}].*', '', reason)
             
             return {
                 "verdict": verdict,
