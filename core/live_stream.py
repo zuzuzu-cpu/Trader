@@ -113,6 +113,11 @@ class LiveStreamManager:
         self._spike_callbacks.append(callback)
 
     @property
+    def is_running(self) -> bool:
+        """True if the stream manager has been started and is active."""
+        return self._running
+
+    @property
     def cache_size(self) -> int:
         """Number of symbols currently in the live cache."""
         with self._lock:

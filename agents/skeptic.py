@@ -10,7 +10,7 @@ Features:
 - Earnings blackout enforcement
 - Short position risk assessment (borrow cost, squeeze risk)
 - Portfolio correlation analysis
-- Structured DeepSeek risk assessment
+- Strict JSON validation with few-shot examples
 """
 import re
 import json
@@ -21,8 +21,10 @@ from openai import OpenAI
 import config
 from core.data_fetcher import DataFetcher
 from execution.alpaca_broker import AlpacaBroker
+from agents.schemas import RiskSchema, RISK_EXAMPLE
 from utils.logger import get_logger
 from utils.rate_limiter import deepseek_limiter, retry_on_rate_limit
+from utils.json_parser import validate_json
 
 log = get_logger("sentinel.skeptic")
 
@@ -73,7 +75,6 @@ class Skeptic:
                     risk_score -= 10
             else:
                 flags.append("NO_QUOTE_DATA")
-                # Don't penalize for missing quotes (weekend/after hours)
 
         # ─── 2. Sector Concentration Check ───────────────────────────
         sector = quant_result.get("sector", "Unknown")
@@ -91,7 +92,6 @@ class Skeptic:
                     flags.append(f"MAX_POSITIONS({len(positions)})")
                     risk_score -= 15
 
-                # Check if we already hold this symbol
                 held_symbols = [p.symbol for p in positions]
                 if symbol.replace("/", "") in held_symbols:
                     flags.append("ALREADY_HELD")
@@ -119,20 +119,16 @@ class Skeptic:
 
         # ─── 6. Short-Specific Risk Checks ──────────────────────────
         if direction == "short":
-            # Shorts in uptrending stocks are dangerous
             if signals.get("above_sma_long", False):
                 flags.append("SHORT_AGAINST_UPTREND")
                 risk_score -= 12
-            # Check for short squeeze potential (high short interest proxy: low float + vol spike)
             if signals.get("volume_spike", False):
                 flags.append("SHORT_SQUEEZE_RISK")
                 risk_score -= 10
-            # RS leaders are bad short candidates
             rs = quant_result.get("rs_rating", 1.0)
             if rs > 1.2:
                 flags.append(f"SHORT_RS_LEADER({rs:.2f})")
                 risk_score -= 10
-            # Max short positions check
             if self.broker:
                 try:
                     positions = self.broker.get_positions()
@@ -153,17 +149,17 @@ class Skeptic:
             if sentiment_score < -5:
                 flags.append(f"VERY_NEGATIVE_SENTIMENT({sentiment_score})")
                 risk_score -= 10
-        else:  # short
+        else:
             if quant_score > 70 and sentiment_score > 3:
                 flags.append("SHORT_POSITIVE_SENTIMENT")
                 risk_score -= 10
 
-        # ─── 6. DeepSeek AI Risk Assessment ──────────────────────────
+        # ─── 8. DeepSeek AI Risk Assessment ──────────────────────────
+        direction = quant_result.get("direction", "long")
         ai_assessment = self._ai_risk_assessment(
-            symbol, asset_type, quant_result, sentiment_result, spread_pct, flags
+            symbol, asset_type, quant_result, sentiment_result, spread_pct, flags, direction
         )
         if ai_assessment:
-            # Integrate AI assessment
             ai_flags = ai_assessment.get("flags", [])
             flags.extend(ai_flags)
             ai_adjustment = ai_assessment.get("score_adjustment", 0)
@@ -194,9 +190,9 @@ class Skeptic:
 
     @retry_on_rate_limit
     def _ai_risk_assessment(self, symbol: str, asset_type: str,
-                            quant_result: dict, sentiment_result: dict,
-                            spread_pct: float, existing_flags: list) -> Optional[dict]:
-        """Calls DeepSeek for nuanced risk assessment."""
+                             quant_result: dict, sentiment_result: dict,
+                             spread_pct: float, existing_flags: list, direction: str = "long") -> Optional[dict]:
+        """Calls DeepSeek for nuanced risk assessment with chain-of-thought."""
         deepseek_limiter.acquire()
         
         deep_fund = {}
@@ -205,12 +201,12 @@ class Skeptic:
 
         signals = quant_result.get("signals", {})
 
-        system_prompt = """You are 'The Skeptic', an AI Risk Manager for a paper trading system.
-Your job is to identify genuine risks, but also recognize genuine opportunities.
-Be balanced: flag real dangers but don't manufacture problems where none exist.
-Respond ONLY in valid JSON format."""
+        system_prompt = """You are 'The Skeptic', an elite AI Risk Manager for a paper trading system.
+Your job is to identify genuine risks but also recognize genuine opportunities.
+Think carefully before flagging risks - don't manufacture problems where none exist.
+You MUST respond in valid JSON format only. No markdown, no explanation outside JSON."""
 
-        user_prompt = f"""Review this potential LONG trade for {symbol} ({asset_type}):
+        user_prompt = f"""Review this trade: {direction.upper()} {symbol} ({asset_type})
 
 QUANTITATIVE DATA:
 - Quant Score: {quant_result.get('score', 0)}/100
@@ -236,10 +232,12 @@ MARKET MICROSTRUCTURE:
 
 EXISTING FLAGS: {existing_flags}
 
-Respond with ONLY this JSON:
+{RISK_EXAMPLE}
+
+Now analyze and respond ONLY with this exact JSON structure (no other text):
 {{
-    "flags": [<list of additional risk flags you detect, e.g. "potential_bull_trap", "low_conviction", "overextended_rally">],
-    "score_adjustment": <integer from -20 to +10, negative = more risky>,
+    "flags": [<list of additional risk flags you detect>],
+    "score_adjustment": <integer from -20 to +10>,
     "reasoning": "<2-3 sentence explanation of your risk assessment>"
 }}"""
 
@@ -250,36 +248,18 @@ Respond with ONLY this JSON:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                max_tokens=300,
+                max_tokens=350,  # Increased for better reasoning
                 temperature=0.1,
             )
             raw = response.choices[0].message.content.strip()
-            return self._parse_response(raw)
+            return validate_json(raw, RiskSchema, max_retries=2)
 
         except Exception as e:
             log.warning(f"DeepSeek risk assessment failed for {symbol}: {e}")
             return None
 
-    def _parse_response(self, raw: str) -> dict:
-        """Parses DeepSeek's risk assessment response."""
-        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if json_match:
-            raw = json_match.group(0)
-
-        try:
-            data = json.loads(raw)
-            return {
-                "flags": list(data.get("flags", [])),
-                "score_adjustment": max(-20, min(10, int(data.get("score_adjustment", 0)))),
-                "reasoning": str(data.get("reasoning", ""))[:300],
-            }
-        except (json.JSONDecodeError, ValueError):
-            return {"flags": [], "score_adjustment": 0, "reasoning": raw[:200]}
-
     def _check_sector_concentration(self, sector: str) -> float:
-        """
-        Checks what percentage of current portfolio value is in the given sector.
-        """
+        """Checks what percentage of current portfolio value is in the given sector."""
         if not self.broker:
             return 0.0
 

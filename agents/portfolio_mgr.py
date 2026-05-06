@@ -13,6 +13,7 @@ Features:
 - Short selling support with separate confidence threshold
 - Earnings blackout enforcement
 - Full trade reasoning audit trail
+- Strict JSON validation with few-shot examples
 """
 import re
 import json
@@ -21,8 +22,10 @@ from typing import Optional
 from openai import OpenAI
 
 import config
+from agents.schemas import DecisionSchema, DECISION_EXAMPLE
 from utils.logger import get_logger
 from utils.rate_limiter import deepseek_limiter, retry_on_rate_limit
+from utils.json_parser import validate_json
 
 log = get_logger("sentinel.portfolio_mgr")
 
@@ -53,7 +56,8 @@ class PortfolioManager:
                risk_result: dict, account_equity: float,
                peak_equity: float,
                insider_result: dict = None,
-               options_result: dict = None) -> dict:
+               options_result: dict = None,
+               bear_market: bool = False) -> dict:
         """
         Final trade decision with position sizing.
 
@@ -122,6 +126,12 @@ class PortfolioManager:
 
         # ─── 2. Circuit Breakers ─────────────────────────────────────
         threshold = self.short_threshold if direction == "short" else self.confidence_threshold
+        
+        # V5: Bear Market adjustment
+        if bear_market and direction == "long":
+            threshold += 10
+            log.info(f"Bear market regime: Increasing long threshold to {threshold}%")
+            
         should_trade = confidence >= threshold
         block_reason = None
 
@@ -183,6 +193,10 @@ class PortfolioManager:
             notional, trailing_stop_pct = self._calculate_position_size(
                 account_equity, quant_result, confidence
             )
+            # V5: Bear Market size reduction
+            if bear_market and direction == "long":
+                notional *= 0.5
+                log.info(f"Bear market regime: Cutting long position size by 50% to ${notional:.2f}")
 
         # ─── 5. Build Reasoning ──────────────────────────────────────
         quant_reasons = quant_result.get("reason", "")
@@ -285,35 +299,42 @@ OPTIONS FLOW:
 - Unusual Calls: {(options_result or {}).get('unusual_calls', False)} | Unusual Puts: {(options_result or {}).get('unusual_puts', False)}
 - Put/Call Ratio: {(options_result or {}).get('pc_ratio', 'N/A')}
 {ml_feedback}
-Respond with ONLY this JSON:
+{DECISION_EXAMPLE}
+
+Think step by step:
+1. What does the quant score tell us?
+2. Does sentiment confirm or contradict?
+3. Any risk flags to consider?
+4. Final decision reasoning:
+
+Now respond ONLY with this exact JSON structure (no other text):
 {{
     "verdict": "APPROVE" or "REJECT",
     "confidence_adjustment": <integer from -5 to +10>,
-    "reasoning": "<2-3 sentences explaining your decision>"
+    "reasoning": "<2-3 sentences>"
 }}"""
 
         try:
             response = self.client.chat.completions.create(
                 model=config.DEEPSEEK_REASONER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=1000,
+                max_tokens=500,
                 temperature=0.1,
             )
             raw = response.choices[0].message.content.strip()
-            return self._parse_reasoner_response(raw)
+            return validate_json(raw, DecisionSchema, max_retries=2)
 
         except Exception as e:
             log.warning(f"DeepSeek Reasoner failed for {symbol}: {e}")
-            # Fallback: try the standard model
             try:
                 response = self.client.chat.completions.create(
                     model=config.DEEPSEEK_MODEL,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=300,
+                    max_tokens=350,
                     temperature=0.1,
                 )
                 raw = response.choices[0].message.content.strip()
-                return self._parse_reasoner_response(raw)
+                return validate_json(raw, DecisionSchema, max_retries=2)
             except Exception as e2:
                 log.warning(f"DeepSeek fallback also failed for {symbol}: {e2}")
                 return None
@@ -325,13 +346,17 @@ Respond with ONLY this JSON:
             raw = json_match.group(0)
         try:
             data = json.loads(raw)
+            # Use Pydantic to validate the core structure
+            validated = DecisionSchema(**data)
+            
             return {
-                "verdict": "APPROVE" if data.get("verdict", "APPROVE") == "APPROVE" else "REJECT",
-                "confidence_adjustment": max(-10, min(5, int(data.get("confidence_adjustment", 0)))),
-                "reasoning": str(data.get("reasoning", ""))[:300],
+                "verdict": "APPROVE" if validated.verdict.upper() == "APPROVE" else "REJECT",
+                "confidence_adjustment": max(-10, min(10, int(data.get("confidence_adjustment", 0)))),
+                "reasoning": validated.reasoning[:300],
             }
-        except (json.JSONDecodeError, ValueError):
-            return {"verdict": "APPROVE", "confidence_adjustment": 0, "reasoning": raw[:200]}
+        except Exception as e:
+            log.warning(f"Portfolio decision validation failed: {e}")
+            return {"verdict": "APPROVE", "confidence_adjustment": 0, "reasoning": f"Validation error: {str(e)[:100]}"}
 
     # ─── Position Sizing ─────────────────────────────────────────────
 

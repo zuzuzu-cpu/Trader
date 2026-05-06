@@ -69,12 +69,29 @@ class RateLimiter:
 # ─── Global rate limiter instances ───────────────────────────────────────────
 # These are shared across all modules that import them.
 
-alpaca_limiter = RateLimiter("alpaca", max_calls=180, period_seconds=60)
-deepseek_limiter = RateLimiter("deepseek", max_calls=30, period_seconds=60)
-newsapi_limiter = RateLimiter("newsapi", max_calls=5, period_seconds=60)  # Very conservative
-finnhub_limiter = RateLimiter("finnhub", max_calls=55, period_seconds=60) # 60/min limit
-fmp_limiter = RateLimiter("fmp", max_calls=240, period_seconds=86400) # 250/day limit
-sec_limiter = RateLimiter("sec", max_calls=10, period_seconds=1) # 10/sec limit
+# Alpaca Trading: 200/min (keep 15% buffer)
+alpaca_limiter = RateLimiter("alpaca", max_calls=170, period_seconds=60)
+
+# Alpaca Market Data: 200/min (Basic plan)
+market_data_limiter = RateLimiter("market_data", max_calls=170, period_seconds=60)
+
+# DeepSeek: Dynamic conc base limit - conservative to avoid 429s
+deepseek_limiter = RateLimiter("deepseek", max_calls=8, period_seconds=60)
+
+# NewsAPI: 100/day on free tier (CRITICAL: daily limit, NOT per minute)
+newsapi_limiter = RateLimiter("newsapi", max_calls=100, period_seconds=86400)
+
+# Yahoo Finance: Free but throttles unpredictably - be very conservative
+yahoo_limiter = RateLimiter("yahoo", max_calls=25, period_seconds=60)
+
+# Finnhub: 60/min (keep buffer)
+finnhub_limiter = RateLimiter("finnhub", max_calls=50, period_seconds=60)
+
+# FMP: 250/day (corrected to daily)
+fmp_limiter = RateLimiter("fmp", max_calls=200, period_seconds=86400)
+
+# SEC: 10/sec limit
+sec_limiter = RateLimiter("sec", max_calls=10, period_seconds=1)
 
 
 def retry_on_rate_limit(func, max_retries=3, base_delay=2.0):

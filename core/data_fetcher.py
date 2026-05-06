@@ -49,11 +49,14 @@ class DataFetcher:
 
     def __init__(self):
         self.stock_client = StockHistoricalDataClient(
-            config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY
+            config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY,
+            url_override=config.ALPACA_DATA_URL
         )
         self.crypto_client = CryptoHistoricalDataClient(
-            config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY
+            config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY,
+            url_override=config.ALPACA_DATA_URL
         )
+
         self._cache_dir = config.DATA_DIR / "cache"
         self._cache_dir.mkdir(exist_ok=True)
         self._fundamentals_cache = {}  # In-memory cache for fundamentals
@@ -350,14 +353,32 @@ class DataFetcher:
 
     def get_news_headlines(self, query: str, max_results: int = 10) -> list[dict]:
         """
-        Fetches news headlines from multiple sources (NewsAPI, Yahoo Finance).
+        Fetches news headlines from multiple sources.
+        Priority: Yahoo Finance (primary, unlimited) -> NewsAPI (backup)
         """
+        from utils.rate_limiter import yahoo_limiter, newsapi_limiter
+        
         headlines = []
         # Clean query (e.g. BTC/USD -> BTC)
         clean_query = query.split("/")[0].replace("-", " ")
 
-        # Source 1: NewsAPI (Primary if key is available)
-        if config.NEWSAPI_KEY:
+        # Source 1: Yahoo Finance (PRIMARY - unlimited, free)
+        try:
+            yahoo_limiter.acquire()
+            ticker = yf.Ticker(query.replace("/", "-"))
+            news = ticker.news or []
+            for article in news[:max_results]:
+                headlines.append({
+                    "title": article.get("title", ""),
+                    "source": article.get("publisher", "Yahoo Finance"),
+                    "published_at": article.get("providerPublishTime", ""),
+                    "description": article.get("title", ""),
+                })
+        except Exception as e:
+            log.debug(f"Yahoo Finance news fetch failed for {query}: {e}")
+
+        # Source 2: NewsAPI (BACKUP - only 100/day, reserve for gaps)
+        if len(headlines) < max_results and config.NEWSAPI_KEY:
             try:
                 newsapi_limiter.acquire()
                 resp = requests.get(
@@ -365,7 +386,7 @@ class DataFetcher:
                     params={
                         "q": clean_query,
                         "sortBy": "publishedAt",
-                        "pageSize": max_results,
+                        "pageSize": max_results - len(headlines),
                         "language": "en",
                         "apiKey": config.NEWSAPI_KEY,
                     },
@@ -374,6 +395,9 @@ class DataFetcher:
                 if resp.status_code == 200:
                     articles = resp.json().get("articles", [])
                     for article in articles:
+                        # Prevent duplicates
+                        if any(h["title"] == article.get("title", "") for h in headlines):
+                            continue
                         headlines.append({
                             "title": article.get("title", ""),
                             "source": article.get("source", {}).get("name", "NewsAPI"),
@@ -382,24 +406,6 @@ class DataFetcher:
                         })
             except Exception as e:
                 log.debug(f"NewsAPI fetch failed for {clean_query}: {e}")
-
-        # Source 2: Yahoo Finance (Fallback)
-        if len(headlines) < max_results:
-            try:
-                ticker = yf.Ticker(query.replace("/", "-"))
-                news = ticker.news or []
-                for article in news[:max_results]:
-                    # Prevent duplicates
-                    if any(h["title"] == article.get("title", "") for h in headlines):
-                        continue
-                    headlines.append({
-                        "title": article.get("title", ""),
-                        "source": article.get("publisher", "Yahoo Finance"),
-                        "published_at": article.get("providerPublishTime", ""),
-                        "description": article.get("title", ""),
-                    })
-            except Exception as e:
-                log.debug(f"Yahoo Finance news fetch failed for {query}: {e}")
 
         return headlines[:max_results]
 

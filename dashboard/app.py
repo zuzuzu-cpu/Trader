@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, render_template, jsonify
 
 # Point to the SQLite database
@@ -13,6 +13,8 @@ def get_db_connection():
     # Adding a timeout of 15 seconds to prevent "database is locked" errors
     # if the main bot thread is actively writing to the database.
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -29,7 +31,7 @@ def api_live_status():
     try:
         if os.path.exists(status_file):
             # Check if file is stale (> 10 minutes)
-            if os.path.getmtime(status_file) < (datetime.utcnow().timestamp() - 600):
+            if os.path.getmtime(status_file) < (datetime.now(timezone.utc).timestamp() - 600):
                 return jsonify({
                     "step": "Sleeping",
                     "details": "Bot is currently idle or sleeping between cycles.",
@@ -67,7 +69,7 @@ def api_summary():
         ).fetchone()
 
         # Count today's trades
-        today = datetime.utcnow().date().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         trades_today = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE timestamp LIKE ?",
             (f"{today}%",)
@@ -119,7 +121,7 @@ def api_equity_chart():
     try:
         conn = get_db_connection()
         # Get snapshots from the last 7 days, max 100 points
-        cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         snaps = conn.execute(
             "SELECT timestamp, equity FROM portfolio_snapshots WHERE timestamp > ? ORDER BY id ASC",
             (cutoff,)

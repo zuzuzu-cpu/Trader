@@ -22,8 +22,9 @@ from alpaca.trading.requests import (
     TrailingStopOrderRequest,
     LimitOrderRequest,
     GetOrdersRequest,
+    GetAccountActivitiesRequest,
 )
-from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus, AssetClass, ActivityType
 from alpaca.data.historical import CryptoHistoricalDataClient
 from alpaca.data.requests import CryptoLatestQuoteRequest
 from alpaca.common.exceptions import APIError
@@ -72,6 +73,79 @@ class AlpacaBroker:
             "daytrade_count": account.daytrade_count,
             "status": account.status,
         }
+
+    @retry_on_rate_limit
+    def get_total_pnl(self) -> float:
+        """
+        Calculates total realized P&L from historical fills.
+        Uses equity - initial equity for simplicity.
+        """
+        alpaca_limiter.acquire()
+        try:
+            account = self.trading_client.get_account()
+            return float(account.equity) - config.INITIAL_EQUITY
+        except Exception as e:
+            log.warning(f"Failed to calculate activities P&L: {e}")
+            return 0.0
+
+    @retry_on_rate_limit
+    def get_closed_positions_pnl(self) -> list[dict]:
+        """
+        Gets closed positions with real P&L from Alpaca.
+        Returns list of dicts with order_id, symbol, pnl, pnl_pct, closed_at.
+        """
+        alpaca_limiter.acquire()
+        closed_positions = []
+        try:
+            # Get closed positions from Alpaca
+            req = GetAccountActivitiesRequest(activity_types=[ActivityType.FILL])
+            activities = self.trading_client.get_account_activities(req)
+            
+            # Build a map of symbol -> trades to match fills
+            position_map = {}
+            
+            for activity in activities:
+                # Build trade history from fills
+                symbol = activity.symbol
+                if symbol not in position_map:
+                    position_map[symbol] = {"buys": [], "sells": []}
+                
+                if activity.side == "buy":
+                    position_map[symbol]["buys"].append({
+                        "qty": float(activity.cum_qty) if activity.cum_qty else 0,
+                        "price": float(activity.price) if activity.price else 0,
+                        "timestamp": activity.transact_time,
+                    })
+                elif activity.side == "sell":
+                    position_map[symbol]["sells"].append({
+                        "qty": float(activity.cum_qty) if activity.cum_qty else 0,
+                        "price": float(activity.price) if activity.price else 0,
+                        "timestamp": activity.transact_time,
+                    })
+            
+            # Calculate P&L per symbol using FIFO
+            for symbol, trades in position_map.items():
+                buys = trades["buys"]
+                sells = trades["sells"]
+                
+                total_buy_value = sum(b["qty"] * b["price"] for b in buys)
+                total_sell_value = sum(s["qty"] * s["price"] for s in sells)
+                
+                if total_buy_value > 0 and total_sell_value > 0:
+                    pnl = total_sell_value - total_buy_value
+                    pnl_pct = (pnl / total_buy_value) * 100 if total_buy_value > 0 else 0
+                    
+                    closed_positions.append({
+                        "symbol": symbol,
+                        "pnl": round(pnl, 2),
+                        "pnl_pct": round(pnl_pct, 2),
+                        "closed_at": trades["sells"][-1]["timestamp"] if sells else None,
+                    })
+                    
+        except Exception as e:
+            log.debug(f"Failed to get closed positions P&L: {e}")
+            
+        return closed_positions
 
     # ─── Market Hours Check ──────────────────────────────────────────
 
@@ -435,24 +509,23 @@ class AlpacaBroker:
                     log.info(
                         f"Trade complete (partial profit): {direction.upper()} {symbol} "
                         f"filled @ ${fill_price:.2f}, qty={total_qty:.4f} "
-                        f"(TP: {take_profit_qty:.4f} @ ${tp_price:.2f}, "
+                        f"(TP: {take_profit_qty:.4f} @ ${tp_price:.2f})"
+                    )
                 else:
                     log.warning(f"Partial exit strategy partially failed for {symbol}. TP={tp_ok}, SL={stop_ok}")
-                    result["status"] = "complete" # Still mark as complete since entry filled
+                    result["status"] = "complete"
             else:
-                # ─── Standard single exit strategy ───────────────
-                        )
-                else:
-                    stop_order_id = self.place_trailing_stop(
-                        symbol, total_qty, trailing_stop_pct, side=stop_side
+                # Standard single exit strategy
+                stop_order_id = self.place_trailing_stop(
+                    symbol, total_qty, trailing_stop_pct, side=stop_side
+                )
+                if stop_order_id:
+                    result["status"] = "complete"
+                    log.info(
+                        f"Trade complete: {direction.upper()} {symbol} filled @ "
+                        f"${fill_info['filled_avg_price']:.2f} "
+                        f"qty={total_qty:.4f}, trailing stop @ {trailing_stop_pct}%"
                     )
-                    if stop_order_id:
-                        result["status"] = "complete"
-                        log.info(
-                            f"Trade complete: {direction.upper()} {symbol} filled @ "
-                            f"${fill_info['filled_avg_price']:.2f} "
-                            f"qty={total_qty:.4f}, trailing stop @ {trailing_stop_pct}%"
-                        )
 
         return result
 

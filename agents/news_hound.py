@@ -6,10 +6,9 @@ Returns structured sentiment analysis with confidence scoring.
 
 Features:
 - Multi-source news aggregation (Yahoo Finance + NewsAPI)
-- Structured DeepSeek prompts with chain-of-thought
-- Event classification (earnings, FDA, mergers, etc.)
-- Source credibility weighting
-- Rate-limited API calls
+- Strict JSON validation with Pydantic
+- Few-shot examples for accurate output
+- Chain-of-thought reasoning for complex cases
 """
 import os
 import re
@@ -20,8 +19,10 @@ from openai import OpenAI
 
 import config
 from core.data_fetcher import DataFetcher
+from agents.schemas import SentimentSchema, SENTIMENT_EXAMPLE
 from utils.logger import get_logger
 from utils.rate_limiter import deepseek_limiter, retry_on_rate_limit
+from utils.json_parser import validate_json, extract_json
 
 log = get_logger("sentinel.news_hound")
 
@@ -74,7 +75,7 @@ class NewsHound:
         # 2. Format news for the prompt
         news_block = self._format_headlines(headlines)
 
-        # 3. Call DeepSeek
+        # 3. Call DeepSeek with strict JSON
         result = self._call_deepseek(symbol, asset_type, news_block, len(headlines))
         result["headline_count"] = len(headlines)
 
@@ -87,11 +88,11 @@ class NewsHound:
     @retry_on_rate_limit
     def _call_deepseek(self, symbol: str, asset_type: str,
                        news_block: str, headline_count: int) -> dict:
-        """Sends structured prompt to DeepSeek and parses the response."""
+        """Sends structured prompt to DeepSeek with few-shot examples."""
         deepseek_limiter.acquire()
 
         system_prompt = """You are 'The News Hound', an elite financial sentiment analyst.
-You analyze news to determine market sentiment for trading decisions.
+Analyze news to determine market sentiment for trading decisions.
 You MUST respond in valid JSON format only. No markdown, no explanation outside JSON."""
 
         user_prompt = f"""Analyze the following {headline_count} recent news headlines for {symbol} ({asset_type}).
@@ -99,9 +100,11 @@ You MUST respond in valid JSON format only. No markdown, no explanation outside 
 NEWS HEADLINES:
 {news_block}
 
-Respond with ONLY this JSON structure:
+{SENTIMENT_EXAMPLE}
+
+Now analyze the headlines above and respond ONLY with this exact JSON structure (no other text):
 {{
-    "score": <integer from -10 to +10>,
+    "score": <integer from -10 to 10>,
     "confidence": <float from 0.0 to 1.0>,
     "events": [<list of detected event types like "earnings_beat", "fda_approval", "merger", "lawsuit", "analyst_upgrade", "insider_selling", "whale_movement", "regulatory_risk">],
     "summary": "<one sentence summary of overall sentiment>"
@@ -129,46 +132,19 @@ Weight signals by source credibility:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                max_tokens=300,
+                max_tokens=350,  # Increased for better reasoning
                 temperature=0.1,
             )
             raw = response.choices[0].message.content.strip()
-            return self._parse_response(raw)
+            
+            # Use strict validation
+            return validate_json(raw, SentimentSchema, max_retries=2)
 
         except Exception as e:
             log.error(f"DeepSeek sentiment call failed for {symbol}: {e}")
             return {
                 "score": 0, "confidence": 0.2,
                 "events": [], "summary": f"AI analysis failed: {str(e)[:50]}",
-            }
-
-    def _parse_response(self, raw: str) -> dict:
-        """Robustly parses DeepSeek's JSON response."""
-        # Try to extract JSON from the response (in case it has markdown wrapping)
-        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if json_match:
-            raw = json_match.group(0)
-
-        try:
-            data = json.loads(raw)
-            events_raw = data.get("events", [])
-            events = events_raw if isinstance(events_raw, list) else [str(events_raw)]
-            
-            return {
-                "score": max(-10, min(10, int(data.get("score", 0)))),
-                "confidence": max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
-                "events": events,
-                "summary": str(data.get("summary", ""))[:200],
-            }
-        except (json.JSONDecodeError, ValueError) as e:
-            log.warning(f"Failed to parse sentiment response: {e}")
-            # Fallback: Return neutral score if the JSON is fully malformed.
-            # Using regex to extract numbers is dangerous as it might grab unrelated digits from reasoning.
-            return {
-                "score": 0,
-                "confidence": 0.1,  # Low confidence due to parse failure
-                "events": [],
-                "summary": f"Parse error: {raw[:100]}",
             }
 
     def _format_headlines(self, headlines: list[dict]) -> str:

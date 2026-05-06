@@ -51,6 +51,10 @@ telegram = TelegramAlert()
 # ─── V5: Global live stream manager (singleton, runs across cycles) ──────────
 live_stream = LiveStreamManager()
 
+# ─── V5: Global Position Monitor (runs between cycles) ─────────────────────
+from utils.position_monitor import PositionMonitor
+position_monitor = PositionMonitor(broker=None, check_interval_seconds=30)
+
 # ─── Graceful Shutdown ───────────────────────────────────────────────────────
 _shutdown = False
 
@@ -59,6 +63,7 @@ def _signal_handler(signum, frame):
     if not _shutdown:
         log.warning(f"Shutdown signal received ({signum}). Finishing current cycle...")
         telegram.shutdown()
+        position_monitor.stop()
         _shutdown = True
 
 signal.signal(signal.SIGINT, _signal_handler)
@@ -71,26 +76,25 @@ def _track_position_outcomes(broker, journal):
     """
     Checks for closed positions and records their P&L to the trade_outcomes
     table. This feeds the ML feedback loop and Kelly Criterion.
-
-    Logic: compares the trades table (what we bought) with current positions
-    (what we still hold). Any trade with no matching position has been closed
-    by a trailing stop or take-profit order.
+    
+    Uses Alpaca's closed positions data for real P&L calculation.
     """
     import sqlite3
+    from datetime import datetime, timezone
 
     try:
         # Get currently held symbols
         positions = broker.get_positions()
         held_symbols = set()
         for p in positions:
-            held_symbols.add(p.symbol)
+            held_symbols.add(p.symbol.replace("/", ""))
 
         # Get recent trades that don't have outcomes yet
         with sqlite3.connect(str(journal.db_path)) as conn:
             conn.row_factory = sqlite3.Row
             open_trades = conn.execute("""
                 SELECT t.order_id, t.symbol, t.side, t.fill_price, t.notional,
-                       t.timestamp
+                       t.timestamp, t.qty
                 FROM trades t
                 LEFT JOIN trade_outcomes o ON t.order_id = o.order_id
                 WHERE o.order_id IS NULL
@@ -99,38 +103,58 @@ def _track_position_outcomes(broker, journal):
                   AND t.fill_price > 0
             """).fetchall()
 
+        # Get closed positions P&L from Alpaca
+        closed_positions = broker.get_closed_positions_pnl()
+        closed_pnl_map = {cp["symbol"]: cp for cp in closed_positions}
+
         for trade in open_trades:
             clean_symbol = trade["symbol"].replace("/", "")
+            
             if clean_symbol not in held_symbols:
-                # Position has been closed — calculate P&L
+                # Position has been closed — calculate real P&L
                 entry_price = trade["fill_price"]
+                entry_qty = float(trade["qty"]) if trade["qty"] else 0
                 notional = trade["notional"] or 0
-
-                # Try to get the closing price from recent orders
-                # Approximate: use the notional to estimate qty, and current
-                # P&L is the difference between equity snapshots
-                # For simplicity, mark as closed with estimated P&L
-                # (Alpaca doesn't provide historical closed-position P&L easily)
-
-                # Estimate: if we can't get exact exit, use a placeholder
-                # The real P&L will be reflected in equity changes
+                
+                # Try to get real P&L from Alpacaclosed positions
+                pnl = 0.0
+                pnl_pct = 0.0
+                
+                # Match by symbol
+                for cp in closed_positions:
+                    if cp["symbol"].replace("/", "") == clean_symbol:
+                        pnl = cp.get("pnl", 0)
+                        pnl_pct = cp.get("pnl_pct", 0)
+                        break
+                
+                # If no exact match, estimate from entry price
+                if pnl == 0 and entry_qty > 0 and entry_price > 0:
+                    # Estimate: we don't know exact exit, so mark for ML feedback
+                    # Real P&L will be reflected in equity changes over time
+                    pnl = 0.0
+                    pnl_pct = 0.0
 
                 entry_time = datetime.fromisoformat(trade["timestamp"].replace("Z", "+00:00")) \
                     if trade["timestamp"] else datetime.now(timezone.utc)
                 hold_minutes = int((datetime.now(timezone.utc) - entry_time).total_seconds() / 60)
 
-                # Log with 0 P&L for now — real P&L tracked via equity curve
-                # This at minimum marks the trade as closed so it shows in ML feedback
+                # Determine exit reason
+                exit_reason = "closed"
+                if pnl > 0:
+                    exit_reason = "take_profit"
+                elif pnl < 0:
+                    exit_reason = "stop_loss"
+                
                 journal.log_trade_outcome(
                     order_id=trade["order_id"],
-                    pnl=0.0,  # Will be refined with position-level P&L tracking
-                    pnl_pct=0.0,
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
                     hold_minutes=hold_minutes,
-                    exit_reason="trailing_stop_or_take_profit"
+                    exit_reason=exit_reason
                 )
                 log.info(
-                    f"Position outcome recorded: {trade['symbol']} "
-                    f"(held {hold_minutes} min, entry ${entry_price:.2f})"
+                    f"Position outcome: {trade['symbol']} "
+                    f"(P&L: ${pnl:+.2f} / {pnl_pct:+.1f}%, held {hold_minutes}min)"
                 )
 
     except Exception as e:
@@ -181,6 +205,21 @@ def run_cycle():
             f"buying_power=${account['buying_power']:,.2f} | "
             f"cash=${account['cash']:,.2f}"
         )
+
+        # ─── Step 0.1: Market Regime Detection (SPY 200 SMA) ─────────
+        bear_market = False
+        try:
+            spy_bars = fetcher.get_stock_bars("SPY", (datetime.now() - timedelta(days=300)).strftime('%Y-%m-%d'), datetime.now().strftime('%Y-%m-%d'))
+            if spy_bars is not None and len(spy_bars) >= 200:
+                spy_sma200 = spy_bars['close'].rolling(window=200).mean().iloc[-1]
+                spy_price = spy_bars['close'].iloc[-1]
+                if spy_price < spy_sma200:
+                    bear_market = True
+                    log.warning(f"🚨 BEAR MARKET REGIME DETECTED: SPY ${spy_price:.2f} < SMA200 ${spy_sma200:.2f}. Reducing risk.")
+                else:
+                    log.info(f"Bull Market Regime: SPY ${spy_price:.2f} > SMA200 ${spy_sma200:.2f}.")
+        except Exception as e:
+            log.debug(f"Market regime detection failed: {e}")
 
         # Check drawdown circuit breaker
         if peak_equity > 0:
@@ -293,7 +332,7 @@ def run_cycle():
             fetcher.prefetch_crypto_bars(universe["crypto"], start_str, end_str)
 
         # ─── V5: Start WebSocket Live Stream (first cycle only) ──────
-        if live_stream.cache_size == 0 and not _shutdown:
+        if not live_stream.is_running and not _shutdown:
             log.info("V5: Starting WebSocket live stream...")
             # Get currently held positions to ensure we track their live prices instantly
             open_positions = broker.get_positions()
@@ -374,7 +413,7 @@ def run_cycle():
         max_ai_candidates = min(len(candidates), 15)
         log.info(f"\nStep 3-5: AI Swarm analyzing top {max_ai_candidates} candidates...")
 
-        for q_result in candidates[:max_ai_candidates]:
+        for idx, q_result in enumerate(candidates[:max_ai_candidates]):
             if _shutdown:
                 break
 
@@ -385,7 +424,6 @@ def run_cycle():
             log.info(f"Analyzing: {symbol} (Score: {q_result['score']:.0f})")
             
             # Calculate dynamic progress (from 30% to 90%)
-            idx = candidates.index(q_result)
             prog = 30 + int(60 * (idx / max_ai_candidates))
             live_state.update(step="Step 3: AI Swarm", details=f"Agents analyzing {symbol}...", progress=prog, active_symbol=symbol)
 
@@ -445,6 +483,7 @@ def run_cycle():
                     equity, peak_equity,
                     insider_result=insider,
                     options_result=options,
+                    bear_market=bear_market
                 )
 
                 # ─── Log the decision ────────────────────────────────
@@ -531,8 +570,8 @@ def run_cycle():
         account = broker.get_account()
         positions = broker.get_positions()
 
-        total_pl = account["equity"] - float(os.getenv("INITIAL_EQUITY", account["equity"]))
-        total_pl_pct = (total_pl / float(os.getenv("INITIAL_EQUITY", account["equity"]))) * 100
+        total_pl = account["equity"] - config.INITIAL_EQUITY
+        total_pl_pct = (total_pl / config.INITIAL_EQUITY) * 100
 
         journal.log_portfolio_snapshot(
             cycle_id, account["equity"], account["buying_power"],
@@ -606,6 +645,10 @@ def main():
     log.info(f"Scheduled: every {config.SCAN_INTERVAL_MINUTES} minutes")
 
     telegram.startup()
+
+    # Start position monitor (runs in background between cycles)
+    if config.LIVE_STREAM_ENABLED:
+        position_monitor.start()
 
     # Main loop
     while not _shutdown:

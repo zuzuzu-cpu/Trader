@@ -75,8 +75,15 @@ class TradeJournal:
         self.db_path = db_path or config.DB_PATH
         self._init_db()
 
+    def _get_conn(self):
+        """Returns a SQLite connection with WAL mode and busy_timeout enabled."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_conn() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -153,7 +160,7 @@ class TradeJournal:
                      quant_score: float, quant_reason: str,
                      sentiment_score: float, risk_grade: str,
                      confidence: float, decision: str, reasoning: str):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_conn() as conn:
             conn.execute("""
                 INSERT INTO decisions
                 (timestamp, cycle_id, symbol, asset_type, quant_score, quant_reason,
@@ -169,7 +176,7 @@ class TradeJournal:
                   side: str, notional: float, order_id: str,
                   quant_score: float, sentiment_score: float,
                   risk_grade: str, confidence: float, reasoning: str):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_conn() as conn:
             conn.execute("""
                 INSERT INTO trades
                 (timestamp, cycle_id, symbol, asset_type, side, notional, order_id,
@@ -185,7 +192,7 @@ class TradeJournal:
                                buying_power: float, cash: float,
                                positions_count: int, total_pl: float,
                                total_pl_pct: float, max_drawdown_pct: float):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_conn() as conn:
             conn.execute("""
                 INSERT INTO portfolio_snapshots
                 (timestamp, cycle_id, equity, buying_power, cash,
@@ -198,7 +205,7 @@ class TradeJournal:
             ))
 
     def start_cycle(self, cycle_id: str):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_conn() as conn:
             conn.execute("""
                 INSERT INTO cycle_log (cycle_id, start_time, status)
                 VALUES (?, ?, 'running')
@@ -207,7 +214,7 @@ class TradeJournal:
     def end_cycle(self, cycle_id: str, universe_size: int,
                   candidates_found: int, trades_executed: int,
                   trades_skipped: int, errors: int):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_conn() as conn:
             conn.execute("""
                 UPDATE cycle_log SET
                     end_time = ?, universe_size = ?, candidates_found = ?,
@@ -222,7 +229,7 @@ class TradeJournal:
 
     def get_peak_equity(self) -> float:
         """Returns the highest equity ever recorded for drawdown calculation."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_conn() as conn:
             result = conn.execute(
                 "SELECT MAX(equity) FROM portfolio_snapshots"
             ).fetchone()
@@ -235,7 +242,7 @@ class TradeJournal:
         Returns the last N trades with outcome data for ML feedback.
         Used to inject trade memory into the DeepSeek Reasoner prompt.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_conn() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
                 SELECT t.symbol, t.side, t.notional, t.confidence,
@@ -255,7 +262,7 @@ class TradeJournal:
         Computes aggregate trade statistics for Kelly Criterion.
         Returns win_rate, avg_win, avg_loss, total_trades, profit_factor.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_conn() as conn:
             conn.row_factory = sqlite3.Row
 
             # Get all closed trades with P&L
@@ -307,7 +314,7 @@ class TradeJournal:
     def log_trade_outcome(self, order_id: str, pnl: float, pnl_pct: float,
                           hold_minutes: int, exit_reason: str):
         """Records the outcome of a closed trade for ML feedback."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_conn() as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO trade_outcomes
                 (order_id, pnl, pnl_pct, hold_minutes, exit_reason, closed_at)

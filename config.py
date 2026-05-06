@@ -12,6 +12,10 @@ load_dotenv()
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+ALPACA_DATA_URL = os.getenv("ALPACA_DATA_URL", "https://data.alpaca.markets")
+
+# Portfolio tracking
+INITIAL_EQUITY = float(os.getenv("INITIAL_EQUITY", "100000"))
 
 # DeepSeek (AI Reasoner / News Sentiment)
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
@@ -20,7 +24,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "")
 FUNDAMENTALS_CACHE_DAYS = int(os.getenv("FUNDAMENTALS_CACHE_DAYS", "30"))
-DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEEPSEEK_REASONER_MODEL = os.getenv("DEEPSEEK_REASONER_MODEL", "deepseek-reasoner")
 
@@ -119,7 +123,7 @@ MAX_SHORT_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", 10))
 
 
 # ─── Portfolio & Risk Management ─────────────────────────────────────────────
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 50.0))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 70.0))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", 0.02))       # 2% max per trade
 MIN_POSITION_USD = float(os.getenv("MIN_POSITION_USD", 10.0))       # Minimum $10 per trade
 MAX_PORTFOLIO_POSITIONS = int(os.getenv("MAX_PORTFOLIO_POSITIONS", 25))
