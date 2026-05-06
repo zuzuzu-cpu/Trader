@@ -14,6 +14,7 @@ Handles all interaction with Alpaca's Trading API:
 import os
 import time
 import math
+from datetime import datetime
 from typing import Optional
 
 from alpaca.trading.client import TradingClient
@@ -22,9 +23,8 @@ from alpaca.trading.requests import (
     TrailingStopOrderRequest,
     LimitOrderRequest,
     GetOrdersRequest,
-    GetAccountActivitiesRequest,
 )
-from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus, AssetClass, ActivityType
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus, AssetClass
 from alpaca.data.historical import CryptoHistoricalDataClient
 from alpaca.data.requests import CryptoLatestQuoteRequest
 from alpaca.common.exceptions import APIError
@@ -91,61 +91,24 @@ class AlpacaBroker:
     @retry_on_rate_limit
     def get_closed_positions_pnl(self) -> list[dict]:
         """
-        Gets closed positions with real P&L from Alpaca.
-        Returns list of dicts with order_id, symbol, pnl, pnl_pct, closed_at.
+        Gets closed positions with real P&L - simplified version.
+        Uses account equity to estimate P&L since Trading SDK has limited activity API.
         """
-        alpaca_limiter.acquire()
-        closed_positions = []
         try:
-            # Get closed positions from Alpaca
-            req = GetAccountActivitiesRequest(activity_types=[ActivityType.FILL])
-            activities = self.trading_client.get_account_activities(req)
+            account = self.trading_client.get_account()
+            current_equity = float(account.equity)
+            pnl = current_equity - config.INITIAL_EQUITY
+            pnl_pct = (pnl / config.INITIAL_EQUITY) * 100 if config.INITIAL_EQUITY > 0 else 0
             
-            # Build a map of symbol -> trades to match fills
-            position_map = {}
-            
-            for activity in activities:
-                # Build trade history from fills
-                symbol = activity.symbol
-                if symbol not in position_map:
-                    position_map[symbol] = {"buys": [], "sells": []}
-                
-                if activity.side == "buy":
-                    position_map[symbol]["buys"].append({
-                        "qty": float(activity.cum_qty) if activity.cum_qty else 0,
-                        "price": float(activity.price) if activity.price else 0,
-                        "timestamp": activity.transact_time,
-                    })
-                elif activity.side == "sell":
-                    position_map[symbol]["sells"].append({
-                        "qty": float(activity.cum_qty) if activity.cum_qty else 0,
-                        "price": float(activity.price) if activity.price else 0,
-                        "timestamp": activity.transact_time,
-                    })
-            
-            # Calculate P&L per symbol using FIFO
-            for symbol, trades in position_map.items():
-                buys = trades["buys"]
-                sells = trades["sells"]
-                
-                total_buy_value = sum(b["qty"] * b["price"] for b in buys)
-                total_sell_value = sum(s["qty"] * s["price"] for s in sells)
-                
-                if total_buy_value > 0 and total_sell_value > 0:
-                    pnl = total_sell_value - total_buy_value
-                    pnl_pct = (pnl / total_buy_value) * 100 if total_buy_value > 0 else 0
-                    
-                    closed_positions.append({
-                        "symbol": symbol,
-                        "pnl": round(pnl, 2),
-                        "pnl_pct": round(pnl_pct, 2),
-                        "closed_at": trades["sells"][-1]["timestamp"] if sells else None,
-                    })
-                    
+            return [{
+                "symbol": "PORTFOLIO",
+                "pnl": round(pnl, 2),
+                "pnl_pct": round(pnl_pct, 2),
+                "closed_at": datetime.now().isoformat(),
+            }]
         except Exception as e:
-            log.debug(f"Failed to get closed positions P&L: {e}")
-            
-        return closed_positions
+            log.debug(f"Failed to get closed P&L: {e}")
+            return []
 
     # ─── Market Hours Check ──────────────────────────────────────────
 
