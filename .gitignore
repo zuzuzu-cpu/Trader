@@ -48,3 +48,5 @@ data/*.db-journal
 # Temporary
 *.tmp
 *.bak
+data/live_status.json
+data/*.json
