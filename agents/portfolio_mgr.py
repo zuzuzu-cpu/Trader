@@ -322,7 +322,7 @@ MARKET REGIME:
 
 MACRO CONTEXT:
 - {macro_context or 'No macro data'}
-
+{ml_feedback}
 {DECISION_EXAMPLE}
 
 Think step by step:

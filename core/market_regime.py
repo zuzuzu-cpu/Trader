@@ -13,6 +13,7 @@ Uses SPY SMA200 for trend direction and SPY ATR% as a VIX proxy.
 """
 import numpy as np
 import pandas as pd
+import pandas_ta as ta
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -141,6 +142,93 @@ class MarketRegime:
     def _default(self) -> dict:
         return {"regime": "SIDEWAYS", "spy_sma200_distance": 0, "atr_pct": 0,
                 "guidance": "Regime detection unavailable — using default sideways regime"}
+
+    # ─── Relative Strength Rating (used by QuantEngine) ─────────────────
+
+    def calculate_relative_strength(self, symbol: str,
+                                     start_date: str, end_date: str,
+                                     is_crypto: bool = False) -> dict:
+        default = {"rs_rating": 1.0, "rs_rank": "NEUTRAL",
+                    "symbol_return": 0, "benchmark_return": 0}
+        try:
+            if is_crypto:
+                sym_df = self.fetcher.get_crypto_bars(symbol, start_date, end_date)
+            else:
+                sym_df = self.fetcher.get_stock_bars(symbol, start_date, end_date)
+            if sym_df is None or len(sym_df) < 20:
+                return default
+            bench_df = self._get_benchmark(start_date, end_date)
+            if bench_df is None or len(bench_df) < 20:
+                return default
+            sym_dates = sym_df.set_index("timestamp")["close"] if "timestamp" in sym_df.columns else sym_df["close"]
+            bench_dates = bench_df.set_index("timestamp")["close"] if "timestamp" in bench_df.columns else bench_df["close"]
+            if isinstance(sym_dates.index, pd.DatetimeIndex):
+                sym_dates.index = sym_dates.index.normalize()
+            if isinstance(bench_dates.index, pd.DatetimeIndex):
+                bench_dates.index = bench_dates.index.normalize()
+            aligned = pd.concat([sym_dates, bench_dates], axis=1, join="inner").dropna()
+            aligned.columns = ["sym", "bench"]
+            lookback = min(config.RS_LOOKBACK_DAYS, len(aligned) - 1)
+            if lookback < 10:
+                return default
+            sym_return = (float(aligned["sym"].iloc[-1]) / float(aligned["sym"].iloc[-lookback]) - 1)
+            bench_return = (float(aligned["bench"].iloc[-1]) / float(aligned["bench"].iloc[-lookback]) - 1)
+            rs_rating = (1 + sym_return) / (1 + bench_return) if bench_return != 0 else 1.0 + sym_return
+            if rs_rating > 1.3: rs_rank = "LEADER"
+            elif rs_rating > 1.1: rs_rank = "STRONG"
+            elif rs_rating > 0.9: rs_rank = "NEUTRAL"
+            elif rs_rating > 0.7: rs_rank = "WEAK"
+            else: rs_rank = "LAGGARD"
+            return {"rs_rating": round(rs_rating, 3), "rs_rank": rs_rank,
+                    "symbol_return": round(sym_return, 4), "benchmark_return": round(bench_return, 4)}
+        except Exception as e:
+            log.debug(f"RS calculation failed for {symbol}: {e}")
+            return default
+
+    def _get_benchmark(self, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+        if self._benchmark_cache is not None:
+            return self._benchmark_cache
+        self._benchmark_cache = self.fetcher.get_benchmark_bars(start_date, end_date)
+        return self._benchmark_cache
+
+    # ─── Multi-Timeframe Confirmation (used by QuantEngine) ────────────
+
+    def confirm_multi_timeframe(self, symbol: str, start_date: str,
+                                 end_date: str, direction: str = "long",
+                                 is_crypto: bool = False) -> dict:
+        if not config.ENABLE_MULTI_TIMEFRAME:
+            return {"confirmed": True, "agreeing_timeframes": 3, "details": {}, "mtf_score_bonus": 10}
+        try:
+            mtf_bars = self.fetcher.get_multi_timeframe_bars(symbol, start_date, end_date, is_crypto=is_crypto)
+            agreeing = 0; details = {}
+            for tf_name, df in mtf_bars.items():
+                if df is None or len(df) < 10:
+                    details[tf_name] = "NO_DATA"; continue
+                close = df["close"].astype(float)
+                signal = self._get_tf_direction(close, direction)
+                details[tf_name] = signal
+                if signal == "AGREE": agreeing += 1
+            confirmed = agreeing >= config.MTF_CONFIRMATION_REQUIRED
+            bonus = 15 if agreeing == 3 else (8 if agreeing == 2 else (0 if agreeing == 1 else -10))
+            return {"confirmed": confirmed, "agreeing_timeframes": agreeing,
+                    "details": details, "mtf_score_bonus": bonus}
+        except Exception as e:
+            log.debug(f"MTF confirmation failed for {symbol}: {e}")
+            return {"confirmed": True, "agreeing_timeframes": 0, "details": {}, "mtf_score_bonus": 0}
+
+    def _get_tf_direction(self, close: pd.Series, direction: str) -> str:
+        try:
+            ema_fast = ta.ema(close, length=9); ema_slow = ta.ema(close, length=21)
+            rsi = ta.rsi(close, length=14)
+            if ema_fast is None or ema_slow is None or rsi is None: return "NO_DATA"
+            ema_f = float(ema_fast.iloc[-1]); ema_s = float(ema_slow.iloc[-1])
+            rsi_val = float(rsi.iloc[-1])
+            if direction == "long":
+                return "AGREE" if (ema_f > ema_s and rsi_val < 75) else "DISAGREE"
+            else:
+                return "AGREE" if (ema_f < ema_s and rsi_val > 25) else "DISAGREE"
+        except Exception:
+            return "NO_DATA"
 
 
 # ─── Global instance ─────────────────────────────────────────────────────

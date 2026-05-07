@@ -1,50 +1,58 @@
-# Sentinel Autotrader V4 🚀
+# Sentinel Autotrader V6 🔥
 
-Sentinel is a production-grade, autonomous trading bot designed for 24/7 market execution. It leverages a multi-agent architecture to combine deep quantitative analysis with AI-driven sentiment intelligence.
+Sentinel is a production-grade, autonomous trading bot for 24/7 market execution. It uses a multi-agent architecture combining quantitative analysis with DeepSeek AI-powered decision making.
 
-## 🧠 Architecture: The Multi-Agent Pipeline
+## Architecture: The V6 Pipeline
 
-Sentinel operates using a specialized pipeline of AI agents:
+### Entry Pipeline (every cycle)
+1. **Universe Scanner** — discovers 10,000+ tradable assets from Alpaca
+2. **Quant Engine** — 15+ indicators, RS rating vs SPY, multi-timeframe confirmation
+3. **News Hound** — Yahoo Finance + NewsAPI → DeepSeek sentiment analysis
+4. **Skeptic** — AI risk assessment with spread, concentration, volatility checks
+5. **Insider Tracker** — SEC Form 4 filings (insider buys/sells)
+6. **Options Flow** — unusual options volume + put/call ratio
+7. **Portfolio Manager** — Kelly Criterion sizing + DeepSeek Reasoner final verdict
 
-1.  **The News Hound (`Agent 1`)**: Scrapes multi-source news (Yahoo Finance, NewsAPI) and uses **DeepSeek AI** to classify market sentiment and detect high-impact events.
-2.  **The Quant Engine**: Calculates 15+ technical indicators (RSI, MACD, Bollinger Bands, ATR) using `pandas-ta` to identify momentum and volatility regimes.
-3.  **The Portfolio Manager (`Agent 3`)**: Synthesizes AI sentiment and technical signals. It uses the **Kelly Criterion** for optimal position sizing and ensures portfolio diversification.
-4.  **The Closing Agent**: Monitors existing positions in real-time, adjusting trailing stops and clearing orphaned orders to protect capital.
+### Exit Pipeline (4-tier hierarchy)
+| Tier | Type | Examples |
+|------|------|----------|
+| **Tier 1** | Hard rules (sub-ms) | Stop-loss, take-profit, max hold days, regime flip |
+| **Tier 2** | Technical rules | Trailing stop, volume collapse, RSI/EMA failure |
+| **Tier 3** | AI-assisted | DeepSeek only when P&L moves >3% or held >24h |
+| **Tier 4** | Portfolio-level (daily) | Correlation reduction, heat check, cooldown list |
 
-## ✨ Key Features
+### Context Injection (every prompt)
+- **Market Regime** — SPY SMA200 + ATR% (VIX proxy) → BULL/BEAR/SIDEWAYS × HIGH/LOW volatility
+- **Macro Agent** — FRED data (fed rate, CPI, unemployment, 10Y yield) cached daily
+- **Correlation Guard** — blocks trades >0.7 correlated with existing positions
 
-*   **Multi-Asset Support**: Seamlessly trades US Equities, ETFs, and Crypto via the Alpaca API.
-*   **Robust Stability**: Built-in rate limiting with smart timeouts, automatic retry logic, and SQLite connection pooling for high-reliability 24/7 uptime.
-*   **Mathematical Precision**: Temporal alignment of asset data with benchmarks (SPY) for accurate Relative Strength (RS) ranking.
-*   **Real-time Dashboard**: A sleek Flask-based dashboard for monitoring live trades, portfolio metrics, and bot health.
-*   **Dockerized Deployment**: Fully containerized for one-command deployment on any VPS (Hostinger, AWS, GCP).
+## Quick Start
 
-## 🛠 Tech Stack
-
-*   **Language**: Python 3.10+
-*   **Data**: Alpaca V2, NewsAPI, Finnhub, FMP
-*   **AI**: DeepSeek-V3 / DeepSeek-Reasoner
-*   **Database**: SQLite (optimized for concurrent access)
-*   **Interface**: Flask, Chart.js, Tailwind CSS
-*   **Infrastructure**: Docker & Docker Compose
-
-## 🚀 Quick Start
-
-### 1. Clone & Configure
 ```bash
 git clone https://github.com/zuzuzu-cpu/Trader.git
 cd Trader
-cp .env.example .env
-```
-Edit the `.env` file with your API keys (Alpaca, DeepSeek, NewsAPI).
-
-### 2. Deploy with Docker
-```bash
+cp .env.example .env  # add your keys
 docker compose up -d --build
 ```
 
-### 3. Monitor
-Access your live trading dashboard at `http://localhost:5000` (or your VPS IP).
+### Required .env keys
+```
+ALPACA_API_KEY=pk_...
+ALPACA_SECRET_KEY=sk_...
+DEEPSEEK_API_KEY=sk-...
+TELEGRAM_BOT_TOKEN=123:abc
+TELEGRAM_CHAT_ID=123456789
+INITIAL_EQUITY=100000
+FRED_API_KEY=...          # optional: macro context
+```
 
-## ⚠️ Disclaimer
+## Tech Stack
+- **Language**: Python 3.12+
+- **AI**: DeepSeek-Chat (fast) + DeepSeek-Reasoner (complex decisions)
+- **Data**: Alpaca V2, Yahoo Finance, SEC EDGAR, Finnhub, FMP, FRED
+- **Database**: SQLite (WAL mode, busy timeout)
+- **Dashboard**: Flask, Chart.js, Tailwind
+- **Infra**: Docker & Docker Compose
+
+## Disclaimer
 This software is for educational purposes only. Trading involves significant risk of loss. Use at your own risk.

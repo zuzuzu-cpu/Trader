@@ -57,6 +57,15 @@ live_stream = LiveStreamManager()
 from utils.position_monitor import PositionMonitor
 position_monitor = PositionMonitor(broker=None, check_interval_seconds=30)
 
+# ─── V6: Global Closing Agent (persistent across cycles — preserves state) ──
+_closing_agent = None
+
+def get_closing_agent(journal=None):
+    global _closing_agent
+    if _closing_agent is None:
+        _closing_agent = ClosingAgent(journal=journal)
+    return _closing_agent
+
 # ─── Graceful Shutdown ───────────────────────────────────────────────────────
 _shutdown = False
 
@@ -204,7 +213,7 @@ def run_cycle():
     # V5 agents
     insider_tracker = InsiderTracker()
     options_flow = OptionsFlow()
-    closing_agent = ClosingAgent()
+    closing_agent = get_closing_agent(journal=journal)
     premarket_scanner = PreMarketScanner(fetcher=fetcher, broker=broker)
 
     journal.start_cycle(cycle_id)

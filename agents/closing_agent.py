@@ -48,12 +48,14 @@ class ClosingAgent:
         1 → 2 → (3 only if triggered) → 4 (once per day)
     """
 
-    def __init__(self, db_path=None):
+    def __init__(self, db_path=None, journal=None):
         import config as cfg
         self.db_path = db_path or (cfg.DATA_DIR / "closing.db")
+        self.journal = journal
         self._init_db()
         self._last_tier4_run = 0
-        self._last_ai_evals = {}  # {symbol: {ts, pnl_pct}}
+        self._last_ai_evals = {}
+        self._peak_prices = {}  # {symbol: float} track highest price since entry
 
     # ─── Database ─────────────────────────────────────────────────────
     def _init_db(self):
@@ -374,24 +376,55 @@ Has the trade setup broken down — yes or no, and why? Return ONLY JSON:
         return ((current - entry) / entry) * 100 * direction
 
     def _get_entry_time(self, symbol) -> Optional[datetime]:
-        """Try to get entry time from trade journal."""
-        return None  # Simplified — main cycle passes this directly now
+        """Get entry time from trade journal."""
+        if not self.journal:
+            return None
+        try:
+            import sqlite3
+            db = getattr(self.journal, 'db_path', None)
+            if not db:
+                return None
+            with sqlite3.connect(str(db)) as conn:
+                row = conn.execute(
+                    "SELECT timestamp FROM trades WHERE symbol=? AND status!='failed' AND fill_price IS NOT NULL ORDER BY id DESC LIMIT 1",
+                    (symbol.replace("/", ""),)
+                ).fetchone()
+                if row and row[0]:
+                    return datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+        except:
+            pass
+        return None
 
     def _get_peak_price(self, symbol: str, entry_price: float, direction: str) -> float:
-        """Get the peak price since entry (for trailing stop)."""
-        # In practice, this reads from the live WebSocket cache
-        # Default to entry price as baseline
-        return entry_price * 1.05 if direction == "long" else entry_price * 0.95
+        """Get the highest price since entry (for trailing stop)."""
+        # Check live stream cache first
+        try:
+            from core.live_stream import live_stream
+            bar = live_stream.get_latest_bar(symbol)
+            if bar and bar.get("high", 0) > 0:
+                current_peak = bar["high"]
+                stored = self._peak_prices.get(symbol, entry_price)
+                new_peak = max(stored, current_peak)
+                self._peak_prices[symbol] = new_peak
+                return new_peak
+        except:
+            pass
+        # Fallback: tracked peak or entry
+        return max(self._peak_prices.get(symbol, entry_price), entry_price)
 
     def _prefetch_indicators(self, positions, fetcher, quant) -> dict:
         """Prefetch technical indicators for all positions at once."""
         results = {}
         for pos in positions:
             symbol = pos.symbol.replace("/", "")
+            is_crypto = "/" in pos.symbol or len(pos.symbol) > 5
             try:
                 end = datetime.now()
                 start = end - timedelta(days=config.LOOKBACK_DAYS)
-                q = quant.evaluate_stock(symbol, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))
+                if is_crypto:
+                    q = quant.evaluate_crypto(symbol, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))
+                else:
+                    q = quant.evaluate_stock(symbol, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))
                 if q and "signals" in q:
                     results[symbol] = q["signals"]
             except:
