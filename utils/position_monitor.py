@@ -87,53 +87,52 @@ class PositionMonitor:
         """Check all positions for exit signals."""
         try:
             positions = self.broker.get_positions()
+        except Exception as e:
+            log.debug(f"Failed to fetch positions: {e}")
+            return
+        
+        if not positions:
+            return
+        
+        for pos in positions:
+            symbol = pos.symbol.replace("/", "")
+            qty = float(pos.qty)
+            current_price = float(pos.current_price)
+            avg_entry = float(pos.avg_entry_price)
             
-            if not positions:
-                return
+            if qty == 0 or current_price == 0:
+                continue
             
-            for pos in positions:
-                symbol = pos.symbol.replace("/", "")
-                qty = float(pos.qty)
-                current_price = float(pos.current_price)
-                avg_entry = float(pos.avg_entry_price)
-                
-                if qty == 0 or current_price == 0:
-                    continue
-                
-                # Get targets
-                targets = self._position_targets.get(symbol, {})
-                entry_price = targets.get("entry_price") or avg_entry
-                stop_pct = targets.get("stop_pct", config.TRAILING_STOP_PCT)
-                take_profit_pct = targets.get("take_profit_pct", config.PROFIT_TARGET_PCT)
-                
-                # Calculate current P&L %
-                if entry_price > 0:
-                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
-                else:
-                    pnl_pct = 0
-                
-                direction = "long" if qty > 0 else "short"
-                
-                # Check exit conditions
-                exit_reason = None
-                
-                if direction == "long":
-                    # Long: check stop loss (down) or take profit (up)
-                    if pnl_pct <= -stop_pct:
-                        exit_reason = "stop_loss"
-                    elif pnl_pct >= take_profit_pct:
-                        exit_reason = "take_profit"
-                else:
-                    # Short: inverted logic
-                    if pnl_pct >= stop_pct:
-                        exit_reason = "stop_loss"  # Price went up against short
-                    elif pnl_pct <= -take_profit_pct:
-                        exit_reason = "take_profit"  # Price dropped, profit realized
-                
-                if exit_reason:
-                    log.warning(f"Position exit triggered: {symbol} {exit_reason} (pnl: {pnl_pct:+.2f}%)")
-                    # Don't auto-exit here - let the main cycle handle it
-                    # This prevents conflicts with the closing agent
+            # Get targets
+            targets = self._position_targets.get(symbol, {})
+            entry_price = targets.get("entry_price") or avg_entry
+            stop_pct = targets.get("stop_pct", config.TRAILING_STOP_PCT)
+            take_profit_pct = targets.get("take_profit_pct", config.PROFIT_TARGET_PCT)
+            
+            # Calculate current P&L %
+            if entry_price > 0:
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100
+            else:
+                pnl_pct = 0
+            
+            direction = "long" if qty > 0 else "short"
+            
+            # Check exit conditions
+            exit_reason = None
+            
+            if direction == "long":
+                if pnl_pct <= -stop_pct:
+                    exit_reason = "stop_loss"
+                elif pnl_pct >= take_profit_pct:
+                    exit_reason = "take_profit"
+            else:
+                if pnl_pct >= stop_pct:
+                    exit_reason = "stop_loss"
+                elif pnl_pct <= -take_profit_pct:
+                    exit_reason = "take_profit"
+            
+            if exit_reason:
+                log.warning(f"Position exit triggered: {symbol} {exit_reason} (pnl: {pnl_pct:+.2f}%)")
     
     def get_position_status(self, symbol: str) -> Optional[dict]:
         """Get current status of a position."""
