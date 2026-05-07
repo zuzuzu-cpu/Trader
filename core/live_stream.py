@@ -148,7 +148,8 @@ class LiveStreamManager:
 
     # ─── Stock WebSocket Thread ───────────────────────────────────────────────
 
-    async def _handle_stock_bar(self, bar):
+    def _handle_stock_bar(self, bar):
+        """Synchronous callback for Alpaca WebSocket bar updates."""
         self._update_cache(bar.symbol, {
             "open": float(bar.open),
             "high": float(bar.high),
@@ -203,7 +204,7 @@ class LiveStreamManager:
                     config.ALPACA_SECRET_KEY,
                 )
 
-                async def handle_crypto_bar(bar):
+                def handle_crypto_bar(bar):
                     self._update_cache(bar.symbol, {
                         "open": float(bar.open),
                         "high": float(bar.high),

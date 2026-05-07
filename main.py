@@ -84,7 +84,7 @@ def _track_position_outcomes(broker, journal):
 
     try:
         # Get currently held symbols
-        positions = broker.get_positions()
+        positions = _get_cached_positions(broker)
         held_symbols = set()
         for p in positions:
             held_symbols.add(p.symbol.replace("/", ""))
@@ -159,6 +159,21 @@ def _track_position_outcomes(broker, journal):
 
     except Exception as e:
         log.debug(f"Position tracking error: {e}")
+
+
+# ─── Position caching (avoids redundant API calls per cycle) ─────────────────
+_position_cache = None
+_position_cache_ts = 0
+
+def _get_cached_positions(broker, max_age_sec: int = 30):
+    """Returns cached positions if fresh, otherwise fetches from broker."""
+    global _position_cache, _position_cache_ts
+    now = time.time()
+    if _position_cache is not None and (now - _position_cache_ts) < max_age_sec:
+        return _position_cache
+    _position_cache = broker.get_positions()
+    _position_cache_ts = now
+    return _position_cache
 
 
 # ─── The Main Pipeline ──────────────────────────────────────────────────────
@@ -239,7 +254,7 @@ def run_cycle():
             live_state.update(step="Step 0.5: Exit Management", details="Evaluating open positions for early exit...", progress=2)
             
             import sqlite3
-            positions = broker.get_positions()
+            positions = _get_cached_positions(broker)
             for pos in positions:
                 if _shutdown: break
                 symbol = pos.symbol
@@ -335,7 +350,7 @@ def run_cycle():
         if not live_stream.is_running and not _shutdown:
             log.info("V5: Starting WebSocket live stream...")
             # Get currently held positions to ensure we track their live prices instantly
-            open_positions = broker.get_positions()
+            open_positions = _get_cached_positions(broker)
             held_symbols = [p.symbol for p in open_positions] if open_positions else []
             
             # Merge held stocks with the top universe candidates (remove duplicates)
@@ -568,7 +583,7 @@ def run_cycle():
 
         # ─── End of Cycle: Portfolio Snapshot ─────────────────────────
         account = broker.get_account()
-        positions = broker.get_positions()
+        positions = _get_cached_positions(broker)
 
         total_pl = account["equity"] - config.INITIAL_EQUITY
         total_pl_pct = (total_pl / config.INITIAL_EQUITY) * 100

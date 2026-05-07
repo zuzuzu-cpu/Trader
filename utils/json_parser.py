@@ -37,13 +37,16 @@ def extract_json(raw: str) -> Optional[dict]:
         except:
             pass
     
-    # Strategy 3: Extract any JSON-like object
-    json_match = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
+    # Strategy 3: Extract any JSON-like object (supports nesting)
+    json_match = re.search(r'\{(?:[^{}]|\{[^{}]*\})*\}', raw, re.DOTALL)
     if json_match:
         try:
             return json.loads(json_match.group(0))
         except:
             pass
+    
+    # Strategy 3b: Try greedy match for deeply nested JSON
+    json_match = re.search(r'\{.*\}', raw, re.DOTALL)
     
     # Strategy 4: Try to fix common issues
     fixed = raw.replace("'", '"').replace("None", "null")

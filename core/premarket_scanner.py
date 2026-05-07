@@ -22,14 +22,20 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import pytz
+
 import config
 from utils.logger import get_logger
 from utils.rate_limiter import alpaca_limiter
 
 log = get_logger("sentinel.premarket_scanner")
 
-# EST timezone offset (UTC-5 standard, UTC-4 DST — use utcoffset from Alpaca clock)
-_EST_OFFSET = -5  # hours
+_EST = pytz.timezone('America/New_York')
+
+
+def _now_est():
+    """Returns current datetime in US Eastern time (handles DST correctly)."""
+    return datetime.now(pytz.UTC).astimezone(_EST)
 
 
 class PreMarketScanner:
@@ -180,14 +186,12 @@ class PreMarketScanner:
 
     @staticmethod
     def is_premarket() -> bool:
-        """Returns True if current UTC time is in pre-market window (4:00–9:29 AM EST)."""
-        now = datetime.now(timezone.utc)
-        hour_est = (now.hour + _EST_OFFSET) % 24
-        return 4 <= hour_est < 9 or (hour_est == 9 and now.minute < 30)
+        """Returns True if current Eastern time is in pre-market window (4:00–9:29 AM ET)."""
+        now = _now_est()
+        return 4 <= now.hour < 9 or (now.hour == 9 and now.minute < 30)
 
     @staticmethod
     def is_after_hours() -> bool:
-        """Returns True if current UTC time is in after-hours window (4:01–7:59 PM EST)."""
-        now = datetime.now(timezone.utc)
-        hour_est = (now.hour + _EST_OFFSET) % 24
-        return 16 <= hour_est < 20
+        """Returns True if current Eastern time is in after-hours window (4:01–7:59 PM ET)."""
+        now = _now_est()
+        return 16 <= now.hour < 20

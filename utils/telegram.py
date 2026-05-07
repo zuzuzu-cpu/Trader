@@ -43,9 +43,9 @@ class TelegramAlert:
                 "disable_web_page_preview": True,
             }, timeout=10)
             if resp.status_code != 200:
-                log.debug(f"Telegram send failed: {resp.status_code} {resp.text[:100]}")
+                log.warning(f"Telegram send failed: {resp.status_code} {resp.text[:200]}")
         except Exception as e:
-            log.debug(f"Telegram send error: {e}")
+            log.error(f"Telegram send error: {e}")
 
     # ─── Alert Types ─────────────────────────────────────────────────
 

@@ -17,6 +17,7 @@ Features:
 """
 import re
 import json
+import time
 from typing import Optional
 
 from openai import OpenAI
@@ -43,13 +44,13 @@ class PortfolioManager:
     def __init__(self, journal=None):
         self.confidence_threshold = config.CONFIDENCE_THRESHOLD
         self.short_threshold = config.SHORT_CONFIDENCE_THRESHOLD
-        self.journal = journal  # TradeJournal for ML feedback
+        self.journal = journal
         self.client = OpenAI(
             api_key=config.DEEPSEEK_API_KEY,
             base_url=config.DEEPSEEK_BASE_URL,
         )
         self._trade_stats_cache = None
-        self._trade_stats_cycle = 0
+        self._trade_stats_ts = 0  # timestamp-based cache invalidation
 
     def decide(self, symbol: str, asset_type: str,
                quant_result: dict, sentiment_result: dict,
@@ -469,12 +470,13 @@ Now respond ONLY with this exact JSON structure (no other text):
             return ""
 
     def _get_trade_stats(self) -> dict:
-        """Gets trade stats with simple per-cycle caching."""
-        if self._trade_stats_cache and self._trade_stats_cycle == id(self):
+        """Gets trade stats with timestamp-based per-cycle caching."""
+        now = time.time()
+        if self._trade_stats_cache and (now - self._trade_stats_ts) < 60:
             return self._trade_stats_cache
         try:
             self._trade_stats_cache = self.journal.get_trade_stats()
-            self._trade_stats_cycle = id(self)
+            self._trade_stats_ts = now
             return self._trade_stats_cache
         except Exception:
             return {"total_trades": 0, "win_rate": 0, "kelly_pct": 0}
