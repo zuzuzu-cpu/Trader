@@ -32,18 +32,20 @@ from core.universe_scanner import UniverseScanner
 from core.quant_engine import QuantEngine
 from core.live_stream import LiveStreamManager
 from core.premarket_scanner import PreMarketScanner
+from core.market_regime import get_market_regime
 from agents.news_hound import NewsHound
 from agents.skeptic import Skeptic
 from agents.portfolio_mgr import PortfolioManager
 from agents.insider_tracker import InsiderTracker
-from agents.social_sentinel import SocialSentinel
 from agents.options_flow import OptionsFlow
 from agents.closing_agent import ClosingAgent
+from agents.macro_agent import macro_agent
 from execution.alpaca_broker import AlpacaBroker
 from utils.logger import get_logger, TradeJournal
 from utils.async_executor import AsyncExecutor
 from utils.telegram import TelegramAlert
 from utils.live_state import live_state
+from utils.correlation_guard import correlation_guard
 
 log = get_logger("sentinel")
 telegram = TelegramAlert()
@@ -201,7 +203,6 @@ def run_cycle():
     async_exec = AsyncExecutor()
     # V5 agents
     insider_tracker = InsiderTracker()
-    social_sentinel = SocialSentinel()
     options_flow = OptionsFlow()
     closing_agent = ClosingAgent()
     premarket_scanner = PreMarketScanner(fetcher=fetcher, broker=broker)
@@ -221,20 +222,13 @@ def run_cycle():
             f"cash=${account['cash']:,.2f}"
         )
 
-        # ─── Step 0.1: Market Regime Detection (SPY 200 SMA) ─────────
-        bear_market = False
-        try:
-            spy_bars = fetcher.get_stock_bars("SPY", (datetime.now() - timedelta(days=300)).strftime('%Y-%m-%d'), datetime.now().strftime('%Y-%m-%d'))
-            if spy_bars is not None and len(spy_bars) >= 200:
-                spy_sma200 = spy_bars['close'].rolling(window=200).mean().iloc[-1]
-                spy_price = spy_bars['close'].iloc[-1]
-                if spy_price < spy_sma200:
-                    bear_market = True
-                    log.warning(f"🚨 BEAR MARKET REGIME DETECTED: SPY ${spy_price:.2f} < SMA200 ${spy_sma200:.2f}. Reducing risk.")
-                else:
-                    log.info(f"Bull Market Regime: SPY ${spy_price:.2f} > SMA200 ${spy_sma200:.2f}.")
-        except Exception as e:
-            log.debug(f"Market regime detection failed: {e}")
+        # ─── Step 0.1: Market Regime Detection ────────────────────────
+        market_regime = get_market_regime()
+        regime = market_regime.get_regime(cycle_id)
+        log.info(f"Market regime: {regime['regime']} | {regime['guidance'][:80]}...")
+
+        # ─── Step 0.2: Macro Context (once daily) ─────────────────────
+        macro_context = macro_agent.get_macro_context()
 
         # Check drawdown circuit breaker
         if peak_equity > 0:
@@ -248,75 +242,39 @@ def run_cycle():
                 journal.end_cycle(cycle_id, 0, 0, 0, 0, 0)
                 return
 
-        # ─── Step 0.5: Proactive Exit Management ─────────────────────
+        # ─── Step 0.5: Proactive Exit Management (4-Tier Closing Agent) ─
         if config.CLOSING_AGENT_ENABLED and not _shutdown:
-            log.info("Step 0.5: AI Closing Agent evaluating open positions...")
-            live_state.update(step="Step 0.5: Exit Management", details="Evaluating open positions for early exit...", progress=2)
-            
-            import sqlite3
+            log.info("Step 0.5: Tiered Closing Agent evaluating open positions...")
+            live_state.update(step="Step 0.5: Exit Management", details="Running tiered exit hierarchy...", progress=2)
+
             positions = _get_cached_positions(broker)
-            for pos in positions:
+            verdicts = closing_agent.run(
+                positions=positions,
+                regime=regime,
+                macro_context=macro_context,
+                fetcher=fetcher,
+                quant=quant,
+                news_hound=news_hound,
+                broker=broker,
+            )
+
+            for v in verdicts:
                 if _shutdown: break
-                symbol = pos.symbol
-                qty = float(pos.qty)
-                current_price = float(pos.current_price)
-                avg_entry_price = float(pos.avg_entry_price)
-                pnl_pct = float(pos.unrealized_plpc) * 100
-                direction = "long" if qty > 0 else "short"
-                
-                asset_type = "crypto" if "/" in symbol or len(symbol) > 5 else "stock"
-                
-                hold_mins = 1440 
-                try:
-                    with sqlite3.connect(str(journal.db_path)) as conn:
-                        conn.row_factory = sqlite3.Row
-                        last_trade = conn.execute("SELECT timestamp FROM trades WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1", (symbol,)).fetchone()
-                        if last_trade and last_trade["timestamp"]:
+                symbol = v.get("symbol", "?")
+                action = v["action"]
+                reason = v.get("reason", "")
+                tier = v.get("tier", "?")
 
-                            entry_time = datetime.fromisoformat(last_trade["timestamp"].replace("Z", "+00:00"))
-                            hold_mins = int((datetime.now(timezone.utc) - entry_time).total_seconds() / 60)
-                except Exception as e:
-                    log.debug(f"Could not calculate hold time for {symbol}: {e}")
-
-                # Fetch required signals for AI evaluation
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=config.LOOKBACK_DAYS)
-                start_str = start_date.strftime('%Y-%m-%d')
-                end_str = end_date.strftime('%Y-%m-%d')
-                
-                if asset_type == "stock":
-                    fetcher.prefetch_stock_bars([symbol], start_str, end_str)
-                    q_res = quant.evaluate_stock(symbol, start_str, end_str)
-                else:
-                    fetcher.prefetch_crypto_bars([symbol], start_str, end_str)
-                    q_res = quant.evaluate_crypto(symbol, start_str, end_str)
-                
-                sent_res = news_hound.analyze_sentiment(symbol, asset_type)
-                risk_res = skeptic.evaluate_risk(symbol, asset_type, q_res, sent_res)
-
-                verdict = closing_agent.evaluate_exit(
-                    symbol, asset_type, direction, qty, current_price, avg_entry_price,
-                    pnl_pct, hold_mins, q_res, sent_res, risk_res
-                )
-
-                if verdict["confidence"] >= config.CLOSING_CONFIDENCE_THRESHOLD:
-                    action = verdict["verdict"]
-                    reason = verdict["reasoning"]
-                    
-                    if action == "SELL_ALL":
-                        log.info(f"AI EXIT: Closing {symbol} entirely.")
-                        if broker.close_position(symbol):
-                            telegram.closing_agent_alert(symbol, action, verdict["confidence"], pnl_pct, reason, "Sold 100%")
-                    elif action == "SELL_PARTIAL":
-                        pct = verdict.get("sell_pct", 0.5)
-                        log.info(f"AI EXIT: Partially closing {symbol} by {pct:.0%}.")
-                        if broker.close_position_partial(symbol, pct):
-                            telegram.closing_agent_alert(symbol, action, verdict["confidence"], pnl_pct, reason, f"Sold {pct:.0%}")
-                    elif action == "ADJUST_STOP":
-                        new_trail = verdict.get("new_trail_pct", 1.5)
-                        log.info(f"AI EXIT: Adjusting trailing stop for {symbol} to {new_trail}%.")
-                        if broker.replace_trailing_stop(symbol, new_trail):
-                            telegram.closing_agent_alert(symbol, action, verdict["confidence"], pnl_pct, reason, f"New stop: {new_trail}%")
+                if action == "SELL_ALL":
+                    log.info(f"Tier {tier} EXIT: Closing {symbol} — {reason}")
+                    if broker.close_position(symbol):
+                        telegram.closing_agent_alert(symbol, action, v.get("confidence", 0), 0, reason, "Sold 100%")
+                        closing_agent.add_cooldown(symbol, reason)
+                elif action == "SELL_PARTIAL":
+                    pct = v.get("sell_pct", 0.5)
+                    log.info(f"Tier {tier} EXIT: Partially closing {symbol} by {pct:.0%} — {reason}")
+                    if broker.close_position_partial(symbol, pct):
+                        telegram.closing_agent_alert(symbol, action, v.get("confidence", 0), 0, reason, f"Sold {pct:.0%}")
 
         # ─── Step 1: Universe Scanning ───────────────────────────────
         log.info("Step 1: Scanning trading universe...")
@@ -447,13 +405,8 @@ def run_cycle():
                 log.info(f"  Agent 1 (News Hound): Analyzing sentiment...")
                 sentiment = news_hound.analyze_sentiment(symbol, asset_type)
 
-                # V5: Blend social sentiment into news score
+                # V5: Blend social sentiment into news score (disabled — replaced by SEC/FRED data)
                 social = {}
-                if not _shutdown:
-                    social = social_sentinel.get_social_score(symbol)
-                    if social["score"] != 0:
-                        sentiment["score"] = max(-10, min(10, sentiment["score"] + social["score"]))
-                        sentiment["summary"] += f" | Reddit: {social.get('summary', '')[:60]}"
 
                 log.info(
                     f"  Sentiment: score={sentiment['score']}, "
@@ -493,12 +446,20 @@ def run_cycle():
                 account = broker.get_account()
                 equity = account["equity"]
 
+                # Correlation check before committing
+                held_symbols = [p.symbol.replace("/", "") for p in _get_cached_positions(broker)]
+                correlation_result = correlation_guard.check(symbol, held_symbols, direction=q_result.get("direction", "long"))
+                if not correlation_result.get("can_trade", True):
+                    log.info(f"Correlation guard: skipping {symbol} — {correlation_result.get('reason', '')}")
+
                 verdict = portfolio_mgr.decide(
                     symbol, asset_type, q_result, sentiment, risk,
                     equity, peak_equity,
                     insider_result=insider,
                     options_result=options,
-                    bear_market=bear_market
+                    regime=regime,
+                    macro_context=macro_context,
+                    correlation_result=correlation_result,
                 )
 
                 # ─── Log the decision ────────────────────────────────
@@ -552,7 +513,7 @@ def run_cycle():
                             verdict["confidence"], exec_result.get("fill_price", 0),
                             verdict["trailing_stop_pct"], verdict,
                             q_result=q_result, sentiment=sentiment,
-                            insider=insider, social=social, options=options,
+                            insider=insider, options=options,
                         )
                         log.info(f"  ✓ Trade complete: {symbol} filled @ ${exec_result['fill_price']:.2f}")
                     elif exec_result["status"] == "market_closed":

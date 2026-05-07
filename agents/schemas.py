@@ -112,13 +112,7 @@ def parse_ai_json(raw: str, schema_class, max_retries: int = 3) -> dict:
 
 def _get_default_response(schema_class) -> dict:
     """Return default response for schema on parse failure."""
-    defaults = {
-        SentimentSchema: {"score": 0, "confidence": 0.3, "events": [], "summary": "Parse failed - default neutral"},
-        RiskSchema: {"grade": "MEDIUM", "score": 50, "flags": [], "reasoning": "Parse failed - default medium risk"},
-        DecisionSchema: {"verdict": "REJECT", "confidence_adjustment": 0, "reasoning": "Parse failed"},
-        ClosingSchema: {"verdict": "HOLD", "confidence": 50, "reasoning": "Parse failed - hold"},
-    }
-    return defaults.get(schema_class, {})
+    return get_default(schema_class)
 
 
 # ─── Few-Shot Examples ──────────────────────────────────────────────
@@ -142,3 +136,75 @@ CLOSING_EXAMPLE = """Example response:
 ```json
 {"verdict": "SELL_ALL", "confidence": 80, "reasoning": "Profit target hit with strong momentum - take profits", "sell_pct": 1.0}
 ```"""
+
+
+# ─── New V6 Schemas ─────────────────────────────────────────────────────────
+
+class RegimeSchema(BaseModel):
+    """Market regime classification."""
+    regime: str = Field(..., description="BULL_LOW_VOL, BULL_HIGH_VOL, BEAR_LOW_VOL, BEAR_HIGH_VOL, SIDEWAYS")
+    spy_sma200_distance: float = Field(..., description="SPY % distance from SMA200")
+    atr_pct: float = Field(default=0, description="SPY ATR% as volatility proxy")
+    guidance: str = Field(..., max_length=200, description="1-2 sentence regime guidance")
+
+
+class MacroSchema(BaseModel):
+    """Macro economic context summary."""
+    fed_rate: Optional[float] = None
+    cpi_latest: Optional[float] = None
+    unemployment: Optional[float] = None
+    yield_10y: Optional[float] = None
+    summary: str = Field(..., max_length=300, description="Macro summary for agent prompts")
+
+
+class ClosingTierVerdict(BaseModel):
+    """Verdict from the tiered closing agent."""
+    action: str = Field(..., description="SELL_ALL, SELL_PARTIAL, HOLD")
+    confidence: int = Field(..., ge=0, le=100)
+    reason: str = Field(..., max_length=200)
+    sell_pct: Optional[float] = Field(default=0, ge=0, le=1)
+    tier: str = Field(default="tier3", description="Which tier decided: tier1, tier2, tier3, tier4")
+
+    @field_validator('action', mode='before')
+    @classmethod
+    def normalize_action(cls, v):
+        valid = ['SELL_ALL', 'SELL_PARTIAL', 'HOLD']
+        if isinstance(v, str):
+            v = v.upper().strip()
+            if v not in valid:
+                return 'HOLD'
+        return v
+
+
+class CooldownEntry(BaseModel):
+    """Entry in the cooldown list."""
+    symbol: str
+    reason: str
+    entered_at: str
+    expires_at: str
+
+
+class CorrelationResult(BaseModel):
+    """Result from correlation guard check."""
+    can_trade: bool
+    max_correlation: float = 0
+    conflicting_position: Optional[str] = None
+    reason: str = ""
+
+
+# ─── Default response map ──────────────────────────────────────────────────
+
+_DEFAULT_RESPONSE_MAP = {
+    SentimentSchema: {"score": 0, "confidence": 0.3, "events": [], "summary": "Parse failed - default neutral"},
+    RiskSchema: {"grade": "MEDIUM", "score": 50, "flags": [], "reasoning": "Parse failed - default medium risk"},
+    DecisionSchema: {"verdict": "REJECT", "confidence_adjustment": 0, "reasoning": "Parse failed"},
+    ClosingSchema: {"verdict": "HOLD", "confidence": 50, "reasoning": "Parse failed - hold"},
+    RegimeSchema: {"regime": "SIDEWAYS", "spy_sma200_distance": 0, "atr_pct": 0, "guidance": "Default sideways regime"},
+    MacroSchema: {"summary": "No macro data available"},
+    ClosingTierVerdict: {"action": "HOLD", "confidence": 0, "reason": "Parse failed", "tier": "tier1"},
+}
+
+
+def get_default(schema_class) -> dict:
+    """Get default response for schema on parse failure."""
+    return _DEFAULT_RESPONSE_MAP.get(schema_class, {})

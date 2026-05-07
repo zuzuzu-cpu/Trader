@@ -58,7 +58,10 @@ class PortfolioManager:
                peak_equity: float,
                insider_result: dict = None,
                options_result: dict = None,
-               bear_market: bool = False) -> dict:
+               bear_market: bool = False,
+               regime: dict = None,
+               macro_context: str = "",
+               correlation_result: dict = None) -> dict:
         """
         Final trade decision with position sizing.
 
@@ -128,13 +131,20 @@ class PortfolioManager:
         # ─── 2. Circuit Breakers ─────────────────────────────────────
         threshold = self.short_threshold if direction == "short" else self.confidence_threshold
         
-        # V5: Bear Market adjustment
-        if bear_market and direction == "long":
+        # Use regime dict for market-aware adjustments
+        regime_label = (regime or {}).get("regime", "SIDEWAYS")
+        if "BEAR" in regime_label and direction == "long":
             threshold += 10
-            log.info(f"Bear market regime: Increasing long threshold to {threshold}%")
+            log.info(f"{regime_label}: Increasing long threshold to {threshold}%")
             
         should_trade = confidence >= threshold
         block_reason = None
+
+        # Correlation guard veto (overrides everything)
+        if correlation_result and not correlation_result.get("can_trade", True):
+            should_trade = False
+            block_reason = f"CORRELATION_GUARD: {correlation_result.get('reason', 'Too correlated')}"
+            log.warning(block_reason)
 
         # Drawdown circuit breaker
         if peak_equity > 0 and account_equity > 0:
@@ -176,6 +186,8 @@ class PortfolioManager:
                 risk_result, confidence, account_equity,
                 insider_result=insider_result,
                 options_result=options_result,
+                regime=regime,
+                macro_context=macro_context,
             )
             if reasoner_result:
                 deepseek_reasoning = reasoner_result.get("reasoning", "")
@@ -194,10 +206,13 @@ class PortfolioManager:
             notional, trailing_stop_pct = self._calculate_position_size(
                 account_equity, quant_result, confidence
             )
-            # V5: Bear Market size reduction
-            if bear_market and direction == "long":
+            # Regime-based size reduction
+            if "BEAR" in regime_label and direction == "long":
                 notional *= 0.5
-                log.info(f"Bear market regime: Cutting long position size by 50% to ${notional:.2f}")
+                log.info(f"{regime_label}: Cutting long position size by 50% to ${notional:.2f}")
+            if "HIGH_VOL" in regime_label:
+                notional *= 0.75
+                log.info(f"{regime_label}: High volatility, reducing size 25% to ${notional:.2f}")
 
         # ─── 5. Build Reasoning ──────────────────────────────────────
         quant_reasons = quant_result.get("reason", "")
@@ -249,7 +264,9 @@ class PortfolioManager:
                           risk_result: dict, confidence: float,
                           equity: float,
                           insider_result: dict = None,
-                          options_result: dict = None) -> Optional[dict]:
+                          options_result: dict = None,
+                          regime: dict = None,
+                          macro_context: str = "") -> Optional[dict]:
         """
         Calls DeepSeek Reasoner (thinking model) for a final high-stakes verdict.
         The reasoner uses chain-of-thought to validate the trade decision.
@@ -299,7 +316,13 @@ OPTIONS FLOW:
 - {(options_result or {}).get('summary', 'No data')} (score: {(options_result or {}).get('score', 0):+d})
 - Unusual Calls: {(options_result or {}).get('unusual_calls', False)} | Unusual Puts: {(options_result or {}).get('unusual_puts', False)}
 - Put/Call Ratio: {(options_result or {}).get('pc_ratio', 'N/A')}
-{ml_feedback}
+
+MARKET REGIME:
+- {(regime or {}).get('guidance', 'No regime data')}
+
+MACRO CONTEXT:
+- {macro_context or 'No macro data'}
+
 {DECISION_EXAMPLE}
 
 Think step by step:

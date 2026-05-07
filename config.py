@@ -30,6 +30,7 @@ DEEPSEEK_REASONER_MODEL = os.getenv("DEEPSEEK_REASONER_MODEL", "deepseek-reasone
 
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 COINMARKETCAP_API_KEY = os.getenv("COINMARKETCAP_API_KEY", "")
+FRED_API_KEY = os.getenv("FRED_API_KEY", "")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -141,67 +142,46 @@ KELLY_MAX_POSITION_PCT = float(os.getenv("KELLY_MAX_POSITION_PCT", 0.05))  # Cap
 KELLY_MIN_POSITION_PCT = float(os.getenv("KELLY_MIN_POSITION_PCT", 0.005)) # Floor at 0.5%
 
 
-# ─── Partial Profit Taking ──────────────────────────────────────────────────
-PARTIAL_PROFIT_ENABLED = os.getenv("PARTIAL_PROFIT_ENABLED", "true").lower() == "true"
-PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", 5.0))       # Take profit at +5%
-TAKE_PROFIT_RATIO = float(os.getenv("TAKE_PROFIT_RATIO", 0.5))      # Sell 50% at target
-REMAINDER_TRAIL_PCT = float(os.getenv("REMAINDER_TRAIL_PCT", 4.0))   # Wider stop on remainder
+# ─── Scaled Partial Exits ────────────────────────────────────────────────
+EXIT_SCALE_ENABLED = os.getenv("EXIT_SCALE_ENABLED", "true").lower() == "true"
+EXIT_SCALE_1_TRIGGER_PCT = float(os.getenv("EXIT_SCALE_1_TRIGGER_PCT", "4.0"))
+EXIT_SCALE_1_PCT = float(os.getenv("EXIT_SCALE_1_PCT", "25.0"))
+EXIT_SCALE_2_TRIGGER_PCT = float(os.getenv("EXIT_SCALE_2_TRIGGER_PCT", "6.0"))
+EXIT_SCALE_2_PCT = float(os.getenv("EXIT_SCALE_2_PCT", "25.0"))
+EXIT_SCALE_3_TRIGGER_PCT = float(os.getenv("EXIT_SCALE_3_TRIGGER_PCT", "8.0"))
+EXIT_SCALE_3_PCT = float(os.getenv("EXIT_SCALE_3_PCT", "50.0"))
 
-
-# ─── Market Hours Awareness ─────────────────────────────────────────────────
-SKIP_CLOSED_MARKET = os.getenv("SKIP_CLOSED_MARKET", "true").lower() == "true"
-
-
-# ─── Scoring Weights ────────────────────────────────────────────────────────
-WEIGHT_QUANT = float(os.getenv("WEIGHT_QUANT", 0.40))
-WEIGHT_SENTIMENT = float(os.getenv("WEIGHT_SENTIMENT", 0.35))
-WEIGHT_RISK = float(os.getenv("WEIGHT_RISK", 0.25))
-
-
-# ─── Scheduler ──────────────────────────────────────────────────────────────
-SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", 30))  # Run every 30 min
-MARKET_OPEN_HOUR = 9                                                  # EST
-MARKET_OPEN_MINUTE = 30
-MARKET_CLOSE_HOUR = 16
-MARKET_CLOSE_MINUTE = 0
-TRADE_EXTENDED_HOURS = os.getenv("TRADE_EXTENDED_HOURS", "true").lower() == "true"
-
-
-# ─── Dashboard ──────────────────────────────────────────────────────────────
-DASHBOARD_ENABLED = os.getenv("DASHBOARD_ENABLED", "true").lower() == "true"
-DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
-DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", 8080))
-
-
-# ─── V5: WebSocket Live Streaming ───────────────────────────────────────────
-LIVE_STREAM_ENABLED = os.getenv("LIVE_STREAM_ENABLED", "true").lower() == "true"
-SPIKE_ALERT_PCT = float(os.getenv("SPIKE_ALERT_PCT", 2.0))        # Alert on ≥2% bar move
-
-# ─── V5: Pre-Market / After-Hours Scanning ──────────────────────────────────
-PREMARKET_ENABLED = os.getenv("PREMARKET_ENABLED", "true").lower() == "true"
-AFTER_HOURS_ENABLED = os.getenv("AFTER_HOURS_ENABLED", "true").lower() == "true"
-PREMARKET_MIN_GAP_PCT = float(os.getenv("PREMARKET_MIN_GAP_PCT", 2.0))   # Min gap % to queue
-
-# ─── V5: Insider Trading Tracker ────────────────────────────────────────────
-INSIDER_ENABLED = os.getenv("INSIDER_ENABLED", "true").lower() == "true"
-INSIDER_LOOKBACK_DAYS = int(os.getenv("INSIDER_LOOKBACK_DAYS", 14))       # Look back 14 days
-
-# ─── V5: Social Sentiment (Reddit/WSB) ──────────────────────────────────────
-SOCIAL_SENTIMENT_ENABLED = os.getenv("SOCIAL_SENTIMENT_ENABLED", "true").lower() == "true"
-WSB_MIN_MENTIONS = int(os.getenv("WSB_MIN_MENTIONS", 5))          # Minimum mentions to score
-REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "SentinelAutotrader/5.0")
-
-# ─── V5: Options Flow ────────────────────────────────────────────────────────
-OPTIONS_FLOW_ENABLED = os.getenv("OPTIONS_FLOW_ENABLED", "true").lower() == "true"
-OPTIONS_VOLUME_THRESHOLD = float(os.getenv("OPTIONS_VOLUME_THRESHOLD", 3.0))  # 3x avg = unusual
-
-# ─── V5: Trade Explanation Cards ─────────────────────────────────────────────
-TRADE_CARDS_ENABLED = os.getenv("TRADE_CARDS_ENABLED", "true").lower() == "true"
-SKIP_CARD_MIN_CONFIDENCE = float(os.getenv("SKIP_CARD_MIN_CONFIDENCE", 45.0)) # Only card near-misses
-
-# ─── V5: Closing AI Agent ────────────────────────────────────────────────────
+# ─── Closing Agent Tiered Exit Hierarchy ──────────────────────────────────
 CLOSING_AGENT_ENABLED = os.getenv("CLOSING_AGENT_ENABLED", "true").lower() == "true"
 CLOSING_CONFIDENCE_THRESHOLD = float(os.getenv("CLOSING_CONFIDENCE_THRESHOLD", 75.0))
+HARD_STOP_LOSS_PCT = float(os.getenv("HARD_STOP_LOSS_PCT", "8.0"))            # Tier 1: hard stop
+HARD_TAKE_PROFIT_PCT = float(os.getenv("HARD_TAKE_PROFIT_PCT", "12.0"))       # Tier 1: hard take-profit
+MAX_HOLD_DAYS = int(os.getenv("MAX_HOLD_DAYS", "14"))                         # Tier 1: max days per position
+TRAIL_STOP_REFRESH_MINUTES = int(os.getenv("TRAIL_STOP_REFRESH_MINUTES", "30"))  # Tier 2: recalc trail freq
+VOLUME_COLLAPSE_RATIO = float(os.getenv("VOLUME_COLLAPSE_RATIO", "0.3"))      # Tier 2: volume < 30% of avg
+RSI_FAIL_THRESHOLD = float(os.getenv("RSI_FAIL_THRESHOLD", "50.0"))           # Tier 2: RSI cross below
+CLOSING_AI_TRIGGER_PNL_MOVE = float(os.getenv("CLOSING_AI_TRIGGER_PNL_MOVE", "3.0"))  # Tier 3: P&L move % since last eval
+CLOSING_AI_TRIGGER_HOURS = int(os.getenv("CLOSING_AI_TRIGGER_HOURS", "24"))            # Tier 3: eval if held > N hours
+CLOSING_PORTFOLIO_HEAT_MAX = float(os.getenv("CLOSING_PORTFOLIO_HEAT_MAX", "0.25"))     # Tier 4: max portfolio risk heat
+
+# ─── Re-entry Cooldown ────────────────────────────────────────────────────
+COOLDOWN_ENABLED = os.getenv("COOLDOWN_ENABLED", "true").lower() == "true"
+COOLDOWN_HOURS = int(os.getenv("COOLDOWN_HOURS", "24"))
+
+# ─── Correlation Guard ────────────────────────────────────────────────────
+CORRELATION_GUARD_ENABLED = os.getenv("CORRELATION_GUARD_ENABLED", "true").lower() == "true"
+CORRELATION_THRESHOLD = float(os.getenv("CORRELATION_THRESHOLD", "0.7"))
+CORRELATION_LOOKBACK_DAYS = int(os.getenv("CORRELATION_LOOKBACK_DAYS", "60"))
+
+# ─── Macro Agent ─────────────────────────────────────────────────────────
+MACRO_AGENT_ENABLED = os.getenv("MACRO_AGENT_ENABLED", "true").lower() == "true"
+MACRO_REFRESH_HOURS = int(os.getenv("MACRO_REFRESH_HOURS", "24"))
+MACRO_FRED_SERIES = os.getenv("MACRO_FRED_SERIES", "FEDFUNDS,CPIAUCSL,UNRATE,DGS10")
+
+# ─── Regime Detection ────────────────────────────────────────────────────
+REGIME_VIX_PROXY_SYMBOL = os.getenv("REGIME_VIX_PROXY_SYMBOL", "SPY")      # VIX substitute
+REGIME_SMA_PERIOD = int(os.getenv("REGIME_SMA_PERIOD", "200"))
+REGIME_ATR_VOL_THRESHOLD = float(os.getenv("REGIME_ATR_VOL_THRESHOLD", "2.0"))  # ATR% > 2% = high vol
 
 # ─── Paths ──────────────────────────────────────────────────────────────────
 import pathlib
